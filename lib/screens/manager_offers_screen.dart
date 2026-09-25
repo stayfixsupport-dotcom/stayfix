@@ -827,7 +827,7 @@ class _OfferCard extends StatelessWidget {
       case 'en_cours':
         return kAuthGold;
       case 'assignee':
-        return const Color(0xFF3B82F6);
+        return const Color(0xFFD6A85A);
       default:
         return Colors.white;
     }

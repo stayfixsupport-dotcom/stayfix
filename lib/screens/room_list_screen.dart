@@ -28,23 +28,12 @@ class _RoomListScreenState extends State<RoomListScreen> {
       return const SupervisorDashboard();
     }
 
-    Map<String, List<Room>> groupedRooms = {};
-    for (var room in rooms) {
-      if (_searchQuery.isNotEmpty && !room.number.contains(_searchQuery)) {
-        continue;
+    List<Room> filteredRooms = rooms.where((room) {
+      if (_searchQuery.isNotEmpty && !room.number.toLowerCase().contains(_searchQuery.toLowerCase())) {
+        return false;
       }
-      if (!groupedRooms.containsKey(room.floor)) {
-        groupedRooms[room.floor] = [];
-      }
-      groupedRooms[room.floor]!.add(room);
-    }
-
-    var sortedFloorKeys = groupedRooms.keys.toList()
-      ..sort((a, b) {
-        int numA = int.tryParse(a.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
-        int numB = int.tryParse(b.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
-        return numA.compareTo(numB);
-      });
+      return true;
+    }).toList();
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -70,13 +59,15 @@ class _RoomListScreenState extends State<RoomListScreen> {
                       height: 16,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.amber))
-                  : const Icon(LucideIcons.database, color: Colors.red),
-              tooltip: "Créer les chambres (Seed)",
-              onPressed: () async {
-                setState(() => _isGenerating = true);
-                await provider.generateDefaultRooms();
-                setState(() => _isGenerating = false);
-              },
+                  : const Icon(LucideIcons.plusCircle, color: Colors.amber),
+              tooltip: "Définir les chambres",
+              onPressed: () => _showCreateRoomsDialog(context, provider),
+            ),
+          if (provider.isDirector && rooms.isNotEmpty)
+            IconButton(
+              icon: const Icon(LucideIcons.plus, color: Colors.amber),
+              tooltip: "Ajouter une chambre",
+              onPressed: () => _showModernAddRoomBottomSheet(context, provider),
             ),
         ],
       ),
@@ -124,149 +115,128 @@ class _RoomListScreenState extends State<RoomListScreen> {
                         const SizedBox(height: 20),
                         Text("Aucune chambre disponible.",
                             style: TextStyle(color: Colors.grey[500])),
+                        const SizedBox(height: 16),
+                        if (provider.isDirector)
+                          ElevatedButton.icon(
+                            icon: const Icon(LucideIcons.plus, size: 16),
+                            label: const Text("Définir le nombre de chambres"),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.amber,
+                              foregroundColor: Colors.black,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            onPressed: () =>
+                                _showCreateRoomsDialog(context, provider),
+                          ),
                       ],
                     ),
                   ),
                 )
               : Expanded(
-                  child: ListView.builder(
+                  child: SingleChildScrollView(
+                    physics: const BouncingScrollPhysics(),
                     padding: EdgeInsets.symmetric(
                         horizontal: isDesktop ? 40 : 16, vertical: 10),
-                    physics: const BouncingScrollPhysics(),
-                    itemCount: sortedFloorKeys.length,
-                    itemBuilder: (ctx, index) {
-                      String floorName = sortedFloorKeys[index];
-                      List<Room> floorRooms = groupedRooms[floorName]!;
-                      return FloorExpandableSection(
-                        floorName: floorName,
-                        rooms: floorRooms,
-                        provider: provider,
-                        user: user!,
-                        isDesktop: isDesktop,
-                      );
-                    },
+                    child: Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      alignment: WrapAlignment.start,
+                      children: filteredRooms
+                          .map((room) => _buildRoomCard(context, provider,
+                              room, user!, isDesktop))
+                          .toList(),
+                    ),
                   ),
                 ),
         ],
       ),
     );
   }
-}
 
-class FloorExpandableSection extends StatefulWidget {
-  final String floorName;
-  final List<Room> rooms;
-  final HotelProvider provider;
-  final HotelUser user;
-  final bool isDesktop;
+  void _showCreateRoomsDialog(BuildContext context, HotelProvider provider) {
+    final TextEditingController controller = TextEditingController();
 
-  const FloorExpandableSection({
-    super.key,
-    required this.floorName,
-    required this.rooms,
-    required this.provider,
-    required this.user,
-    required this.isDesktop,
-  });
-
-  @override
-  State<FloorExpandableSection> createState() => _FloorExpandableSectionState();
-}
-
-class _FloorExpandableSectionState extends State<FloorExpandableSection> {
-  bool _isExpanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    bool isDirector = widget.user.role == UserRoles.director;
-
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF121212),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-        ),
-        child: ExpansionTile(
-          initiallyExpanded: _isExpanded,
-          onExpansionChanged: (bool expanded) {
-            setState(() => _isExpanded = expanded);
-          },
-          tilePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-          collapsedIconColor: Colors.amber,
-          iconColor: Colors.amber,
-          title: Row(
-            children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.amber.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(6),
-                  border:
-                      Border.all(color: Colors.amber.withValues(alpha: 0.3)),
-                ),
-                child: Text(widget.floorName.toUpperCase(),
-                    style: const TextStyle(
-                        color: Colors.amber,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 11)),
-              ),
-              const SizedBox(width: 12),
-              Text("${widget.rooms.length} Chambres",
-                  style: TextStyle(
-                      color: Colors.grey[400],
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold)),
-            ],
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF141417),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          "Nombre de chambres",
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
           ),
-          trailing: isDirector
-              ? Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(LucideIcons.edit3,
-                          size: 16, color: Colors.grey),
-                      onPressed: () => _showModernRenameDialog(
-                          context, widget.provider, widget.floorName),
-                    ),
-                    IconButton(
-                      icon: const Icon(LucideIcons.plusCircle,
-                          color: Colors.amber, size: 20),
-                      onPressed: () => _showModernAddRoomBottomSheet(
-                          context, widget.provider, widget.floorName),
-                    ),
-                    Icon(
-                      _isExpanded
-                          ? LucideIcons.chevronUp
-                          : LucideIcons.chevronDown,
-                      color: Colors.grey,
-                      size: 20,
-                    ),
-                  ],
-                )
-              : null,
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-              child: Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                alignment: WrapAlignment.start,
-                children: widget.rooms
-                    .map((room) => _buildRoomCard(context, widget.provider,
-                        room, widget.user, widget.isDesktop))
-                    .toList(),
+            const Text(
+              "Combien de chambres possède votre hôtel ?",
+              style: TextStyle(
+                fontSize: 13,
+                color: Colors.white70,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              keyboardType: TextInputType.number,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: "Ex: 50",
+                hintStyle: TextStyle(
+                  color: Colors.white38,
+                ),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white24),
+                ),
+                focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.amber),
+                ),
               ),
             ),
           ],
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              "Annuler",
+              style: TextStyle(color: Colors.white60),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.amber,
+              foregroundColor: Colors.black,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onPressed: () async {
+              int? count = int.tryParse(controller.text.trim());
+              if (count != null && count > 0) {
+                Navigator.pop(ctx);
+                setState(() => _isGenerating = true);
+                await provider.generateDefaultRooms(count: count);
+                if (mounted) {
+                  setState(() => _isGenerating = false);
+                }
+              }
+            },
+            child: const Text("Valider", style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
       ),
     );
   }
 
+  // Removed FloorExpandableSection logic
   Widget _buildRoomCard(BuildContext context, HotelProvider provider, Room room,
       HotelUser user, bool isDesktop) {
     bool isDirector = user.role == UserRoles.director;
@@ -402,7 +372,38 @@ class _FloorExpandableSectionState extends State<FloorExpandableSection> {
               child: Align(
                 alignment: Alignment.centerRight,
                 child: InkWell(
-                  onTap: () => provider.deleteRoom(room.id),
+                  onTap: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: const Color(0xFF141417),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16)),
+                        title: const Text("Supprimer la chambre ?",
+                            style: TextStyle(color: Colors.white)),
+                        content: Text(
+                            "Êtes-vous sûr de vouloir supprimer la chambre ${room.number} ?",
+                            style: const TextStyle(color: Colors.white70)),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text("Annuler",
+                                style: TextStyle(color: Colors.white60)),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              provider.deleteRoom(room.id);
+                            },
+                            child: const Text("Supprimer",
+                                style: TextStyle(
+                                    color: Colors.redAccent,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                   child: const Icon(LucideIcons.trash2,
                       size: 16, color: Color(0xFFEF4444)),
                 ),
@@ -440,7 +441,7 @@ class _FloorExpandableSectionState extends State<FloorExpandableSection> {
   }
 
   void _showModernAddRoomBottomSheet(
-      BuildContext context, HotelProvider provider, String floor) {
+      BuildContext context, HotelProvider provider) {
     final controller = TextEditingController();
     showModalBottomSheet(
       context: context,
@@ -524,7 +525,7 @@ class _FloorExpandableSectionState extends State<FloorExpandableSection> {
                               borderRadius: BorderRadius.circular(16))),
                       onPressed: () {
                         if (controller.text.isNotEmpty) {
-                          provider.addRoom(controller.text, floor);
+                          provider.addRoom(controller.text, 'Général');
                           Navigator.pop(ctx);
                         }
                       },
@@ -542,105 +543,5 @@ class _FloorExpandableSectionState extends State<FloorExpandableSection> {
     );
   }
 
-  void _showModernRenameDialog(
-      BuildContext context, HotelProvider provider, String oldFloorName) {
-    final controller = TextEditingController(text: oldFloorName);
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-        child: ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              padding: const EdgeInsets.all(32),
-              decoration: BoxDecoration(
-                color: const Color(0xFF18181B).withValues(alpha: 0.95),
-                border: Border(
-                    top:
-                        BorderSide(color: Colors.white.withValues(alpha: 0.1))),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                      child: Container(
-                          width: 40,
-                          height: 4,
-                          decoration: BoxDecoration(
-                              color: Colors.grey[700],
-                              borderRadius: BorderRadius.circular(10)))),
-                  const SizedBox(height: 30),
-                  Row(
-                    children: [
-                      Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.1),
-                              shape: BoxShape.circle),
-                          child: const Icon(LucideIcons.edit3,
-                              color: Colors.white, size: 24)),
-                      const SizedBox(width: 16),
-                      const Text("RENOMMER L'ÉTAGE",
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1)),
-                    ],
-                  ),
-                  const SizedBox(height: 30),
-                  Container(
-                    decoration: BoxDecoration(
-                        color: const Color(0xFF121212),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.05))),
-                    child: TextField(
-                      controller: controller,
-                      style: const TextStyle(color: Colors.white, fontSize: 18),
-                      decoration: InputDecoration(
-                        hintText: "Nouveau nom",
-                        hintStyle: TextStyle(color: Colors.grey[600]),
-                        prefixIcon:
-                            const Icon(LucideIcons.layers, color: Colors.grey),
-                        border: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 18),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 30),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 56,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16))),
-                      onPressed: () {
-                        if (controller.text.isNotEmpty) {
-                          provider.renameFloor(oldFloorName, controller.text);
-                          Navigator.pop(ctx);
-                        }
-                      },
-                      child: const Text("ENREGISTRER",
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, letterSpacing: 1)),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  // Rename floor dialog removed since floors are no longer displayed
 }

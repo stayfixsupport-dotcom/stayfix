@@ -122,7 +122,7 @@ class SupervisorDashboard extends StatelessWidget {
                       subtitle: "Chambres en service",
                       count: service,
                       icon: LucideIcons.sprayCan,
-                      color: const Color(0xFF3B82F6),
+                      color: const Color(0xFFD6A85A),
                       onTap: () => _goToRooms(context, 'Service'),
                     ),
                     _buildModernCard(

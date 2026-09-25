@@ -13,6 +13,7 @@ import 'manager_chat_thread_screen.dart';
 import 'manager_notifications_screen.dart';
 import 'manager_offers_screen.dart';
 import 'manager_property_route_helper.dart';
+import '../services/property_scope_service.dart';
 import '../services/vps_media_service.dart';
 import '../widgets/sf_bottom_nav.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -100,7 +101,9 @@ class _WorkerCache {
 // -----------------------------------------------------------------------------
 
 class ManagerMessagesScreen extends StatefulWidget {
-  const ManagerMessagesScreen({super.key});
+  const ManagerMessagesScreen({super.key, this.hideBottomNav = false});
+
+  final bool hideBottomNav;
 
   @override
   State<ManagerMessagesScreen> createState() => _ManagerMessagesScreenState();
@@ -278,6 +281,30 @@ class _ManagerMessagesScreenState extends State<ManagerMessagesScreen> {
   }
 
   void _openCompose() {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (widget.hideBottomNav) {
+      // Director hub: only director-to-director contacts
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (_) => _DirectorComposeSheet(
+          managerUid: uid,
+          onCreateGroup: () {
+            Navigator.pop(context);
+            showModalBottomSheet(
+              context: context,
+              backgroundColor: Colors.transparent,
+              isScrollControlled: true,
+              builder: (_) => _CreateGroupSheet(
+                managerUid: uid,
+                directorOnly: true,
+              ),
+            );
+          },
+        ),
+      );
+      return;
+    }
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -422,9 +449,23 @@ class _ManagerMessagesScreenState extends State<ManagerMessagesScreen> {
                     if (snap.connectionState == ConnectionState.waiting) {
                       return const _SkeletonList();
                     }
+                    if (snap.hasError) {
+                      // Firestore index missing or permission error — show empty state
+                      return _EmptyConvsState(
+                        isDirectorMode: widget.hideBottomNav,
+                        onCompose: _openCompose,
+                        onContactIntervenant: () => Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const IntervenantsScreen()),
+                        ),
+                      );
+                    }
                     final items = _applyFilters(_parseItems(snap, uid));
                     if (items.isEmpty) {
                       return _EmptyConvsState(
+                        isDirectorMode: widget.hideBottomNav,
+                        onCompose: _openCompose,
                         onContactIntervenant: () => Navigator.pushReplacement(
                           context,
                           MaterialPageRoute(
@@ -474,16 +515,17 @@ class _ManagerMessagesScreenState extends State<ManagerMessagesScreen> {
           ),
           // -- Floating compose button -------------------------------------
           Positioned(
-            bottom: 120,
+            bottom: widget.hideBottomNav ? 24 : 120,
             right: 20,
             child: _ComposeFab(onTap: _openCompose),
           ),
           // -- Bottom nav -------------------------------------------------
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: SfBottomNav(
+          if (!widget.hideBottomNav)
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: SfBottomNav(
               currentIndex: 3,
               onTapIndex: (index) {
                 if (index == 3) return;
@@ -522,6 +564,8 @@ class _ManagerMessagesScreenState extends State<ManagerMessagesScreen> {
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _conversationsStream(String uid) {
     try {
+      // Use a single-field query to avoid requiring a composite Firestore index.
+      // The `directorOnly` filter is applied client-side in `_parseItems`.
       return FirebaseFirestore.instance
           .collection('conversations')
           .where('participants', arrayContains: uid)
@@ -534,18 +578,27 @@ class _ManagerMessagesScreenState extends State<ManagerMessagesScreen> {
   List<_ConvItem> _parseItems(
       AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snap, String uid) {
     if (!snap.hasData) return [];
-    final validDocs = snap.data!.docs.where((d) {
-      final data = d.data();
-      final managerId = (data['managerId'] as String?)?.trim();
-      final createdBy = (data['createdBy'] as String?)?.trim();
-      if (managerId != null && managerId.isNotEmpty) {
-        return managerId == uid;
-      }
-      if (createdBy != null && createdBy.isNotEmpty) {
-        return createdBy == uid;
-      }
-      return true;
-    });
+    final docs = snap.data!.docs;
+
+    // In director-hub mode (hideBottomNav == true): show only directorOnly threads.
+    // In regular mode: show all threads the user participates in, but exclude
+    // directorOnly threads (those belong to the director hub, not the main inbox).
+    final validDocs = widget.hideBottomNav
+        ? docs.where((d) {
+            final data = d.data();
+            final isDirectorOnly = data['directorOnly'] as bool? ?? false;
+            if (!isDirectorOnly) return false;
+            final parts = (data['participants'] as List?)?.map((e) => '$e').toList() ?? [];
+            return parts.contains(uid);
+          })
+        : docs.where((d) {
+            final data = d.data();
+            // Hide director-only threads from the main messages inbox.
+            final isDirectorOnly = data['directorOnly'] as bool? ?? false;
+            if (isDirectorOnly) return false;
+            return true;
+          });
+
     final items = validDocs.map((d) => _convFromDoc(d, uid)).toList();
     items.sort((a, b) {
       final aTime = a.lastAt ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -781,13 +834,13 @@ class _BellButton extends StatelessWidget {
             size: 20,
           ),
         ),
-        Positioned(
+        const Positioned(
           right: 0,
           top: 0,
           child: UnreadMessagesDot(
             size: 9,
             color: _kOrangeDot,
-            borderColor: const Color(0xFF1A1A1A),
+            borderColor: Color(0xFF1A1A1A),
           ),
         ),
       ],
@@ -1381,8 +1434,14 @@ class _SkeletonCard extends StatelessWidget {
 // -----------------------------------------------------------------------------
 
 class _EmptyConvsState extends StatelessWidget {
-  const _EmptyConvsState({required this.onContactIntervenant});
+  const _EmptyConvsState({
+    required this.onContactIntervenant,
+    this.isDirectorMode = false,
+    this.onCompose,
+  });
   final VoidCallback onContactIntervenant;
+  final bool isDirectorMode;
+  final VoidCallback? onCompose;
 
   @override
   Widget build(BuildContext context) {
@@ -1415,7 +1474,9 @@ class _EmptyConvsState extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              'Vos Ã©changes avec les intervenants\napparaÃ®tront ici.',
+              isDirectorMode
+                  ? 'Vos échanges avec les autres directeurs\napparaîtront ici.'
+                  : 'Vos échanges avec les intervenants\napparaîtront ici.',
               style: GoogleFonts.inter(
                 color: Colors.white.withValues(alpha: 0.60),
                 fontSize: 14,
@@ -1426,7 +1487,7 @@ class _EmptyConvsState extends StatelessWidget {
             ),
             const SizedBox(height: 24),
             OutlinedButton(
-              onPressed: onContactIntervenant,
+              onPressed: isDirectorMode && onCompose != null ? onCompose : onContactIntervenant,
               style: OutlinedButton.styleFrom(
                 side: BorderSide(color: kAuthGold.withValues(alpha: 0.70)),
                 foregroundColor: kAuthGold,
@@ -1437,7 +1498,7 @@ class _EmptyConvsState extends StatelessWidget {
                     const EdgeInsets.symmetric(horizontal: 24, vertical: 13),
               ),
               child: Text(
-                'Contacter un intervenant',
+                isDirectorMode ? 'Démarrer une discussion' : 'Contacter un intervenant',
                 style: GoogleFonts.inter(
                     fontWeight: FontWeight.w600, fontSize: 14),
               ),
@@ -1476,6 +1537,263 @@ class _ComposeFab extends StatelessWidget {
           ],
         ),
         child: const Icon(LucideIcons.pencil, color: Colors.black, size: 22),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// _DirectorComposeSheet  (director-only: contact another director or create group)
+// -----------------------------------------------------------------------------
+
+class _DirectorComposeSheet extends StatefulWidget {
+  const _DirectorComposeSheet({
+    required this.managerUid,
+    required this.onCreateGroup,
+  });
+  final String managerUid;
+  final VoidCallback onCreateGroup;
+  @override
+  State<_DirectorComposeSheet> createState() => _DirectorComposeSheetState();
+}
+
+class _DirectorComposeSheetState extends State<_DirectorComposeSheet> {
+  List<Map<String, dynamic>> _directors = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final managerDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.managerUid)
+          .get();
+      final managerData = managerDoc.exists ? managerDoc.data()! : <String, dynamic>{};
+      final managerProps = PropertyScopeService.scopedPropertyIds(managerData);
+      // Also capture hotelId directly for a reliable same-hotel match
+      final managerHotelId = (managerData['hotelId'] as String?)?.trim() ?? '';
+
+      // Query in two batches because Firestore whereIn is limited to 10 values
+      // and we need to cover all 5 director roles.
+      final rolesBatchA = [
+        'Directeur Gouvernante',
+        'Directeur Maintenance',
+        'Directeur Réception',
+        'Directeur Général',
+        'Directeur Propreté',
+      ];
+      final snapA = await FirebaseFirestore.instance
+          .collection('users')
+          .where('role', whereIn: rolesBatchA)
+          .get();
+
+      bool isSameHotel(Map<String, dynamic> data) {
+        final otherProps = PropertyScopeService.scopedPropertyIds(data);
+        final otherHotelId = (data['hotelId'] as String?)?.trim() ?? '';
+
+        // If the current manager has no hotel info, only show directors who
+        // also have no hotel info (unassigned pool) — never show everyone.
+        if (managerProps.isEmpty && managerHotelId.isEmpty) {
+          return otherProps.isEmpty && otherHotelId.isEmpty;
+        }
+
+        // Check shared property IDs first
+        if (otherProps.any((p) => managerProps.contains(p))) return true;
+
+        // Fallback: match by hotelId field directly
+        if (managerHotelId.isNotEmpty && otherHotelId == managerHotelId) return true;
+
+        // Directors with no hotel info are NOT shown — they don't belong to this hotel.
+        return false;
+      }
+
+      final list = <Map<String, dynamic>>[];
+      for (final doc in snapA.docs) {
+        if (doc.id == widget.managerUid) continue;
+        final data = doc.data();
+        if (!isSameHotel(data)) continue;
+
+        String name = '';
+        for (final k in ['firstName', 'username', 'fullName', 'displayName']) {
+          final v = (data[k] as String?)?.trim();
+          if (v != null && v.isNotEmpty) { name = v; break; }
+        }
+        if (name.isEmpty) continue;
+        String? photo;
+        String? photoUrl;
+        photoUrl = VpsMediaService.resolveProfileImageUrl(data);
+        for (final k in ['photoBase64', 'profilePhotoBase64']) {
+          final v = (data[k] as String?)?.trim();
+          if (v != null && v.isNotEmpty) { photo = v; break; }
+        }
+        list.add({
+          'id': doc.id,
+          'name': name,
+          'photo': photo,
+          'photoUrl': photoUrl,
+          'role': data['role'],
+        });
+      }
+      if (mounted) setState(() { _directors = list; _loading = false; });
+    } catch (e) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _startConversation(Map<String, dynamic> director) async {
+    Navigator.pop(context);
+    final uid = widget.managerUid;
+    final otherId = director['id'] as String;
+    // Look for existing 1-to-1 director conversation
+    final existing = await FirebaseFirestore.instance
+        .collection('conversations')
+        .where('participants', arrayContains: uid)
+        .where('directorOnly', isEqualTo: true)
+        .where('type', isEqualTo: 'intervenant')
+        .get();
+    String? convId;
+    for (final doc in existing.docs) {
+      final parts = (doc.data()['participants'] as List?)?.map((e) => '$e').toList() ?? [];
+      if (parts.contains(otherId) && parts.length == 2) {
+        convId = doc.id;
+        break;
+      }
+    }
+    convId ??= (await FirebaseFirestore.instance.collection('conversations').add({
+      'appOrigin': 'stayfix',
+      'type': 'intervenant',
+      'title': director['name'] as String,
+      'participants': [uid, otherId],
+      'directorOnly': true,
+      'lastMessage': '',
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'unreadBy': <String, int>{},
+      'createdAt': FieldValue.serverTimestamp(),
+      'createdBy': uid,
+      'isActive': true,
+      'blockedBy': <String>[],
+    })).id;
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ManagerChatThreadScreen(
+          conversationId: convId!,
+          title: director['name'] as String,
+          subtitle: director['role'] as String? ?? 'Manager',
+          avatarUrl: null,
+          avatarBase64: director['photo'] as String?,
+          isAvailable: true,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.7,
+        ),
+        decoration: const BoxDecoration(
+          color: Color(0xFF111111),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Center(
+              child: Text(
+                'Contacter un manager',
+                style: GoogleFonts.cormorantGaramond(
+                  color: Colors.white, fontSize: 22, fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _ComposeOption(
+              icon: LucideIcons.users,
+              label: 'Créer un groupe de managers',
+              onTap: widget.onCreateGroup,
+            ),
+            const SizedBox(height: 16),
+            if (_loading)
+              const Center(child: CircularProgressIndicator(color: Color(0xFFD6A85A)))
+            else if (_directors.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Center(
+                  child: Text(
+                    'Aucun autre directeur trouvé.',
+                    style: GoogleFonts.inter(color: Colors.white54, fontSize: 13),
+                  ),
+                ),
+              )
+            else
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: _directors.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, i) {
+                    final d = _directors[i];
+                    final photoUrl = d['photoUrl'] as String?;
+                    final photoB64 = d['photo'] as String?;
+                    final nameStr = ((d['name'] as String?) ?? '');
+                    final initial = nameStr.isNotEmpty ? nameStr[0].toUpperCase() : 'D';
+                    Widget avatarChild = Text(
+                      initial,
+                      style: GoogleFonts.inter(color: Colors.black, fontWeight: FontWeight.w700),
+                    );
+                    ImageProvider? bgImage;
+                    if (photoUrl != null && photoUrl.isNotEmpty) {
+                      bgImage = NetworkImage(photoUrl);
+                    } else if (photoB64 != null && photoB64.isNotEmpty) {
+                      try { bgImage = MemoryImage(base64Decode(photoB64)); } catch (_) {}
+                    }
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
+                        backgroundColor: const Color(0xFFD6A85A),
+                        backgroundImage: bgImage,
+                        radius: 22,
+                        child: bgImage == null ? avatarChild : null,
+                      ),
+                      title: Text(
+                        nameStr.isEmpty ? 'Directeur' : nameStr,
+                        style: GoogleFonts.inter(
+                          color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(
+                        d['role'] as String? ?? 'Manager',
+                        style: GoogleFonts.inter(color: Colors.white38, fontSize: 12),
+                      ),
+                      onTap: () => _startConversation(d),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -1830,8 +2148,9 @@ class _ActionTile extends StatelessWidget {
 
 // _CreateGroupSheet
 class _CreateGroupSheet extends StatefulWidget {
-  const _CreateGroupSheet({required this.managerUid});
+  const _CreateGroupSheet({required this.managerUid, this.directorOnly = false});
   final String managerUid;
+  final bool directorOnly;
   @override
   State<_CreateGroupSheet> createState() => _CreateGroupSheetState();
 }
@@ -1858,6 +2177,78 @@ class _CreateGroupSheetState extends State<_CreateGroupSheet> {
 
   Future<void> _loadWorkers() async {
     try {
+      if (widget.directorOnly) {
+        // Load all director accounts from the users collection
+        final managerDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.managerUid)
+            .get();
+        final managerData = managerDoc.exists ? managerDoc.data()! : <String, dynamic>{};
+        final managerProps = PropertyScopeService.scopedPropertyIds(managerData);
+        final managerHotelId = (managerData['hotelId'] as String?)?.trim() ?? '';
+
+        final rolesBatch = [
+          'Directeur Gouvernante',
+          'Directeur Maintenance',
+          'Directeur Réception',
+          'Directeur Général',
+          'Directeur Propreté',
+        ];
+        final snap = await FirebaseFirestore.instance
+            .collection('users')
+            .where('role', whereIn: rolesBatch)
+            .get();
+
+        bool isSameHotel(Map<String, dynamic> data) {
+          final otherProps = PropertyScopeService.scopedPropertyIds(data);
+          final otherHotelId = (data['hotelId'] as String?)?.trim() ?? '';
+
+          // If manager has no hotel info, only show unassigned directors.
+          if (managerProps.isEmpty && managerHotelId.isEmpty) {
+            return otherProps.isEmpty && otherHotelId.isEmpty;
+          }
+
+          // Check shared property IDs first.
+          if (otherProps.any((p) => managerProps.contains(p))) return true;
+
+          // Fallback: match by hotelId directly.
+          if (managerHotelId.isNotEmpty && otherHotelId == managerHotelId) return true;
+
+          // Directors with no hotel info are NOT shown — they don't belong here.
+          return false;
+        }
+
+        final list = <Map<String, dynamic>>[];
+        for (final doc in snap.docs) {
+          if (doc.id == widget.managerUid) continue;
+          final data = doc.data();
+          if (!isSameHotel(data)) continue;
+
+          String name = '';
+          for (final k in ['firstName', 'username', 'fullName', 'displayName']) {
+            final v = (data[k] as String?)?.trim();
+            if (v != null && v.isNotEmpty) { name = v; break; }
+          }
+          if (name.isEmpty) continue;
+          String? photo;
+          String? photoUrl;
+          photoUrl = VpsMediaService.resolveProfileImageUrl(data);
+          for (final k in ['photoBase64', 'profilePhotoBase64']) {
+            final v = (data[k] as String?)?.trim();
+            if (v != null && v.isNotEmpty) { photo = v; break; }
+          }
+          list.add(<String, dynamic>{
+            'id': doc.id,
+            'name': name,
+            'subtitle': data['role'] as String? ?? 'Manager',
+            'photo': photo,
+            'photoUrl': photoUrl,
+          });
+        }
+        if (mounted) setState(() { _workers = list; _loading = false; });
+        return;
+      }
+      // Original logic: load from existing conversations
       final conversations = await FirebaseFirestore.instance
           .collection('conversations')
           .where('participants', arrayContains: widget.managerUid)
@@ -1957,6 +2348,7 @@ class _CreateGroupSheetState extends State<_CreateGroupSheet> {
         'createdBy': widget.managerUid,
         'isActive': true,
         'blockedBy': <String>[],
+        if (widget.directorOnly) 'directorOnly': true,
       });
       if (!mounted) return;
       Navigator.pop(context);

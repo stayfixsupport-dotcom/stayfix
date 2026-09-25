@@ -1,19 +1,22 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/hotel_models.dart';
 import '../providers/hotel_provider.dart';
+import '../services/app_env.dart';
+import '../services/stayfix_email_service.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:provider/provider.dart';
-import 'package:http/http.dart' as http;
 
 class AddStaffScreen extends StatefulWidget {
   final String currentUserRole;
   final bool isAddingSupervisorMode;
+  final String? initialRole;
 
-  const AddStaffScreen(
-      {super.key,
-      required this.currentUserRole,
-      this.isAddingSupervisorMode = false});
+  const AddStaffScreen({
+    super.key,
+    required this.currentUserRole,
+    this.isAddingSupervisorMode = false,
+    this.initialRole,
+  });
 
   @override
   State<AddStaffScreen> createState() => _AddStaffScreenState();
@@ -40,8 +43,40 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
     super.initState();
     if (widget.isAddingSupervisorMode) {
       _selectedRole = UserRoles.supervisor;
+    } else if (widget.initialRole != null) {
+      _selectedRole = widget.initialRole;
+    } else if (_roles.isNotEmpty) {
+      _selectedRole = _roles.first['id'];
     }
   }
+
+  String get _screenTitle {
+    if (_selectedRole == UserRoles.maintenanceManager) {
+      return "AJOUTER DIR. MAINTENANCE";
+    } else if (_selectedRole == UserRoles.housekeepingManager) {
+      return "AJOUTER DIR. PROPRETÉ";
+    } else if (_selectedRole == UserRoles.receptionManager) {
+      return "AJOUTER DIR. RÉCEPTION";
+    } else if (widget.isAddingSupervisorMode || _selectedRole == UserRoles.supervisor) {
+      return "AJOUTER UN SUPERVISEUR";
+    } else if (widget.currentUserRole == UserRoles.director) {
+      return "AJOUTER UN DIRECTEUR";
+    } else {
+      return "AJOUTER UN OUVRIER";
+    }
+  }
+
+  bool get _isWorkerRole {
+    final isDirectorCreatingSubManager =
+        widget.currentUserRole == UserRoles.director &&
+            !widget.isAddingSupervisorMode &&
+            (_selectedRole == UserRoles.maintenanceManager ||
+                _selectedRole == UserRoles.housekeepingManager ||
+                _selectedRole == UserRoles.receptionManager);
+    return !isDirectorCreatingSubManager;
+  }
+
+  String get _targetAppName => _isWorkerRole ? "Stayfix Job" : "Stayfix";
 
   List<Map<String, dynamic>> get _roles {
     if (widget.currentUserRole == UserRoles.director) {
@@ -56,9 +91,9 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
       } else {
         return [
           {
-            'id': UserRoles.receptionManager,
-            'label': 'Dir. Réception',
-            'icon': LucideIcons.conciergeBell
+            'id': UserRoles.maintenanceManager,
+            'label': 'Dir. Maintenance',
+            'icon': LucideIcons.hammer
           },
           {
             'id': UserRoles.housekeepingManager,
@@ -66,9 +101,9 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
             'icon': LucideIcons.sparkles
           },
           {
-            'id': UserRoles.maintenanceManager,
-            'label': 'Dir. Maintenance',
-            'icon': LucideIcons.hammer
+            'id': UserRoles.receptionManager,
+            'label': 'Dir. Réception',
+            'icon': LucideIcons.conciergeBell
           },
         ];
       }
@@ -98,36 +133,27 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
     }
   }
 
-  Future<void> _sendEmailViaGoogleScript(
-      {required String name,
-      required String email,
-      required String username,
-      required String password}) async {
-    try {
-      final response = await http.post(
-        Uri.parse(googleScriptUrl),
-        body: json.encode({
-          'to_email': email,
-          'name': name,
-          'username': username,
-          'password': password
-        }),
-      );
-      if (response.statusCode == 200 || response.statusCode == 302) {
-        debugPrint("Email Sent");
-      }
-    } catch (e) {
-      debugPrint("Error Google Script: $e");
-    }
-  }
+
 
   void _submit() async {
+    final bool requiresUsername = _isWorkerRole && 
+                                  _selectedRole != UserRoles.supervisor && 
+                                  !widget.isAddingSupervisorMode;
+
     if (_selectedRole == null ||
-        _firstNameController.text.isEmpty ||
-        _usernameController.text.isEmpty ||
-        _passwordController.text.isEmpty) {
+        _firstNameController.text.trim().isEmpty ||
+        (requiresUsername && _usernameController.text.trim().isEmpty) ||
+        _passwordController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text("Veuillez remplir tous les champs obligatoires"),
+          backgroundColor: Colors.redAccent));
+      return;
+    }
+
+    final String email = _emailController.text.trim();
+    if (email.isEmpty || !email.contains('@')) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Veuillez saisir une adresse email valide"),
           backgroundColor: Colors.redAccent));
       return;
     }
@@ -145,35 +171,75 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
     setState(() => _isLoading = true);
 
     String finalRole = _selectedRole!;
+    final provider = Provider.of<HotelProvider>(context, listen: false);
+
     if (widget.isAddingSupervisorMode && _selectedManagerId != null) {
-      final provider = Provider.of<HotelProvider>(context, listen: false);
       final manager =
           provider.hotelStaff.firstWhere((u) => u.id == _selectedManagerId);
       String cleanManagerRole = manager.role.replaceAll('Dir. ', '');
       finalRole = "Superviseur ($cleanManagerRole)";
     }
 
-    await Provider.of<HotelProvider>(context, listen: false).addStaffMember(
-      firstName: _firstNameController.text,
-      lastName: _lastNameController.text,
-      email: _emailController.text,
-      phone: _phoneController.text,
-      username: _usernameController.text,
-      password: _passwordController.text,
+    final String firstName = _firstNameController.text.trim();
+    final String lastName = _lastNameController.text.trim();
+    final String phone = _phoneController.text.trim();
+    final String username = _usernameController.text.trim();
+    final String password = _passwordController.text.trim();
+    final String fullName = "$firstName $lastName".trim();
+    final String hotelName = provider.currentHotelName;
+
+    // Determine target app and download link
+    final bool isWorker = _isWorkerRole;
+
+    await provider.addStaffMember(
+      firstName: firstName,
+      lastName: lastName,
+      email: email,
+      phone: phone,
+      username: username,
+      password: password,
       role: finalRole,
+      appAccess: isWorker ? 'stayfix_job' : null,
     );
 
-    await _sendEmailViaGoogleScript(
-      name: "${_firstNameController.text} ${_lastNameController.text}",
-      email: _emailController.text,
-      username: _usernameController.text,
-      password: _passwordController.text,
+    final String appName = isWorker ? "Stayfix Job" : "Stayfix";
+    final String appLinkAndroid = isWorker
+        ? await AppEnv.get(
+            'STAYFIX_JOB_APP_URL',
+            fallback: 'https://play.google.com/store/apps/details?id=com.rezzaky.stayfix_job',
+          )
+        : await AppEnv.get(
+            'STAYFIX_APP_DOWNLOAD_URL',
+            fallback: 'https://play.google.com/store/apps/details?id=com.rezzaky.stayfix',
+          );
+    final String appLinkIos = isWorker
+        ? await AppEnv.get(
+            'STAYFIX_JOB_APP_URL_IOS',
+            fallback: 'https://apps.apple.com/pk/app/stayfix-job/id6771841746',
+          )
+        : await AppEnv.get(
+            'STAYFIX_APP_DOWNLOAD_URL_IOS',
+            fallback: 'https://apps.apple.com/us/app/stayfix/id6771962711',
+          );
+
+    // Send via central StayfixEmailService using the new layout
+    await StayfixEmailService.sendHotelStaffCreatedEmail(
+      to: email,
+      recipientName: fullName.isNotEmpty ? fullName : email,
+      hotelName: hotelName,
+      role: finalRole,
+      temporaryPassword: password,
+      appName: appName,
+      appLinkAndroid: appLinkAndroid,
+      appLinkIos: appLinkIos,
     );
 
     if (mounted) {
       setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text("Membre ajouté avec succès"),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+            "Membre ajouté avec succès. Email envoyé avec le lien $appName.",
+          ),
           backgroundColor: Colors.green));
       Navigator.pop(context);
     }
@@ -189,9 +255,15 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
         leading: IconButton(
             icon: const Icon(LucideIcons.arrowLeft, color: Colors.white),
             onPressed: () => Navigator.pop(context)),
-        title: const Text("AJOUTER UN MEMBRE",
-            style:
-                TextStyle(color: Colors.white, fontSize: 14, letterSpacing: 2)),
+        title: Text(
+          _screenTitle,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            letterSpacing: 1.5,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ),
       body: SingleChildScrollView(
         padding:
@@ -199,6 +271,29 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Container(
+              margin: const EdgeInsets.only(bottom: 20),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF18181B),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.08),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(LucideIcons.mail, color: Colors.amber, size: 20),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      "Le membre recevra son mot de passe et le lien de l'application $_targetAppName par email.",
+                      style: TextStyle(color: Colors.grey[300], fontSize: 11.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const Text("SÉLECTIONNER LE RÔLE",
                 style: TextStyle(
                     color: Colors.grey,
@@ -252,8 +347,11 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
                     letterSpacing: 1,
                     fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            _buildInput(
-                "Nom d'utilisateur", _usernameController, LucideIcons.atSign),
+            if (_isWorkerRole && 
+                _selectedRole != UserRoles.supervisor && 
+                !widget.isAddingSupervisorMode)
+              _buildInput(
+                  "Nom d'utilisateur", _usernameController, LucideIcons.atSign),
             _buildInput("Mot de passe", _passwordController, LucideIcons.lock,
                 isPassword: true),
 

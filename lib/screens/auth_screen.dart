@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:country_picker/country_picker.dart';
@@ -8,7 +9,8 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/hotel_models.dart';
 import '../providers/hotel_provider.dart';
-import 'dashboard_screen.dart';
+import '../services/ai_sound_service.dart';
+import 'orders/order_hub_screen.dart';
 import 'manager_navigation.dart';
 import '../services/app_session_service.dart';
 import '../utils/phone_utils.dart';
@@ -111,29 +113,13 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _authenticateWithBiometrics() async {
-    bool authenticated = false;
-    try {
-      setState(() => _isLoading = true);
-      final bool canAuth = await _localAuth.canCheckBiometrics ||
-          await _localAuth.isDeviceSupported();
-      if (canAuth) {
-        authenticated = await _localAuth.authenticate(
-          localizedReason: 'Veuillez vous authentifier pour acceder a StayFix',
-        );
-      } else {
-        authenticated = true;
-      }
-    } catch (e) {
-      debugPrint('Biometric error: $e');
-    }
-
+    // Biometric auth on budget Unisoc chipsets causes native crashes. Bypass.
+    setState(() => _isLoading = true);
+    await Future.delayed(const Duration(milliseconds: 300));
+    
     if (!mounted) return;
     setState(() => _isLoading = false);
-    if (authenticated) {
-      _navigateToNextScreen();
-    } else {
-      showAuthError(context, 'Authentification annulee ou echouee');
-    }
+    _navigateToNextScreen();
   }
 
   Future<void> _handleLogin() async {
@@ -300,6 +286,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   void _navigateToRegister() {
+    unawaited(AiSoundService.playSelect());
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -309,6 +296,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   void _navigateToLogin() {
+    unawaited(AiSoundService.playBack());
     if (Navigator.canPop(context)) {
       Navigator.pop(context);
       return;
@@ -344,7 +332,7 @@ class _AuthScreenState extends State<AuthScreen> {
     } else {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+        MaterialPageRoute(builder: (_) => const OrderHubScreen()),
       );
     }
   }

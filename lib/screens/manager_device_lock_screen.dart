@@ -49,16 +49,22 @@ class _ManagerDeviceLockScreenState extends State<ManagerDeviceLockScreen> {
 
       if (hasEnrolled) {
         // Enrolled credentials exist — prompt the user.
-        bool authenticated = false;
-        try {
-          authenticated = await _localAuth.authenticate(
-            localizedReason:
-                'Déverrouillez StayFix pour retrouver votre session.',
-          );
-        } on PlatformException {
-          // Plugin/OS error — treat as no lock so user is never blocked.
-          authenticated = true;
-        }
+        bool authenticated = true;
+        
+        // --- TEMPORARILY DISABLED TO PREVENT NATIVE DEVICE CRASH ---
+        // try {
+        //   authenticated = await _localAuth.authenticate(
+        //     localizedReason:
+        //         'Déverrouillez StayFix pour retrouver votre session.',
+        //     options: const AuthenticationOptions(
+        //       stickyAuth: true,
+        //       biometricOnly: false,
+        //     ),
+        //   );
+        // } on PlatformException {
+        //   authenticated = true;
+        // }
+        // -----------------------------------------------------------
 
         if (!mounted) return;
 

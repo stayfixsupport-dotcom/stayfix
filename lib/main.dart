@@ -10,20 +10,23 @@ import 'core/manager_session_guard.dart';
 import 'core/theme.dart';
 import 'core/theme_provider.dart';
 import 'providers/hotel_provider.dart';
+import 'providers/order_provider.dart';
 import 'services/app_session_service.dart';
 import 'services/message_sound_service.dart';
 import 'services/push_notification_service.dart';
 import 'screens/auth_screen.dart';
-import 'screens/dashboard_screen.dart';
+import 'screens/orders/order_hub_screen.dart';
 import 'screens/manager_device_lock_screen.dart';
 import 'screens/manager_navigation.dart';
 import 'package:lottie/lottie.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting('fr_FR', null);
 
   try {
     await Firebase.initializeApp(
@@ -31,6 +34,7 @@ void main() async {
     );
     FirebaseFirestore.instance.settings = const Settings(
       persistenceEnabled: true,
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
     );
     await PushNotificationService.initialize();
   } catch (e) {
@@ -43,6 +47,7 @@ void main() async {
       providers: [
         ChangeNotifierProvider(create: (_) => HotelProvider()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => OrderProvider()),
       ],
       child: const HotelApp(),
     ),
@@ -181,25 +186,9 @@ class _SplashPageState extends State<SplashPage> {
       return resolveSessionDestination(sessionUid);
     }
 
-    try {
-      final bool canAuthenticateWithBiometrics = await auth.canCheckBiometrics;
-      final bool canAuthenticate =
-          canAuthenticateWithBiometrics || await auth.isDeviceSupported();
-
-      if (canAuthenticate) {
-        final bool didAuthenticate = await auth.authenticate(
-          localizedReason: "Veuillez vous authentifier pour acceder a Stayfix",
-        );
-
-        if (!didAuthenticate) {
-          return const AuthScreen();
-        }
-      }
-    } catch (e) {
-      debugPrint("Biometric error: $e");
-    }
-
-    return const DashboardScreen();
+    // Biometric auth for staff is temporarily bypassed to prevent
+    // native crashes on budget Unisoc chipset devices.
+    return const OrderHubScreen();
   }
 
   @override

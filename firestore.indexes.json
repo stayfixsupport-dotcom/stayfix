@@ -1,0 +1,88 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "org_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "currentDeptId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "creatorDeptId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "currentDeptId", "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isRoutine", "order": "ASCENDING" },
+        { "fieldPath": "routineDateString", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isRoutine", "order": "ASCENDING" },
+        { "fieldPath": "routineDateString", "order": "ASCENDING" },
+        { "fieldPath": "currentDeptId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isRoutine", "order": "ASCENDING" },
+        { "fieldPath": "routineTemplateId", "order": "ASCENDING" },
+        { "fieldPath": "routineDateString", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deptId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deptId", "order": "ASCENDING" },
+        { "fieldPath": "read", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "org_categories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isActive", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

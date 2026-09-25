@@ -8,6 +8,7 @@ import 'director_type_screen.dart';
 import 'immeuble_dashboard.dart';
 import 'manager_profile_config.dart';
 import 'other_property_dashboard.dart';
+import 'orders/order_hub_screen.dart';
 import 'terms_screen.dart';
 import '../services/app_session_service.dart';
 import '../services/property_scope_service.dart';
@@ -61,6 +62,11 @@ Future<Widget> resolveSessionDestination(String userId) async {
 
   if (profileValue == null) {
     return const DirectorTypeScreen();
+  }
+
+  // Hotel manager → DashboardScreen (bypass SelectionScreen)
+  if (profileValue == 'hotel_manager') {
+    return const OrderHubScreen();
   }
 
   if (profileValue == 'apartment_condo_owner' ||

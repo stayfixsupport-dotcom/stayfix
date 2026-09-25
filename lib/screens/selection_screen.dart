@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../providers/hotel_provider.dart';
-import 'dashboard_screen.dart';
+import '../services/ai_sound_service.dart';
+import 'orders/order_hub_screen.dart';
 import 'auth_screen.dart';
 import 'manager_profile_config.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -82,6 +84,7 @@ class _SelectionScreenState extends State<SelectionScreen> {
   }
 
   void _showCreateDialog(BuildContext context) {
+    unawaited(AiSoundService.playSelect());
     final nameController = TextEditingController();
     final locationController = TextEditingController();
     final provider = Provider.of<HotelProvider>(context, listen: false);
@@ -409,7 +412,7 @@ class _SelectionScreenState extends State<SelectionScreen> {
                 provider.setHotel(hotel);
                 Navigator.pushReplacement(
                   context,
-                  MaterialPageRoute(builder: (_) => const DashboardScreen()),
+                  MaterialPageRoute(builder: (_) => const OrderHubScreen()),
                 );
               },
               child: Container(

@@ -98,7 +98,11 @@ class WorkerFilterState {
 
 // -- Screen widget (unchanged) -------------------------------------------------
 class IntervenantsScreen extends StatefulWidget {
-  const IntervenantsScreen({super.key});
+  const IntervenantsScreen({super.key, this.initialCategory});
+
+  /// When provided, the list is pre-filtered to this department/category
+  /// as soon as the screen opens (e.g. 'Maintenance generale' or 'Ménage').
+  final String? initialCategory;
 
   @override
   State<IntervenantsScreen> createState() => _IntervenantsScreenState();
@@ -128,6 +132,11 @@ class _IntervenantsScreenState extends State<IntervenantsScreen> {
   @override
   void initState() {
     super.initState();
+    // Pre-apply the category passed from the dashboard quick-action buttons.
+    if (widget.initialCategory != null) {
+      _filters = _filters.copyWith(department: widget.initialCategory);
+      _selectedDepartment = widget.initialCategory;
+    }
     _restoreAvailabilityPreference();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncManagerCurrentAddress();

@@ -64,6 +64,40 @@ class StayfixEmailService {
     );
   }
 
+  static Future<StayfixEmailResult> sendHotelStaffCreatedEmail({
+    required String to,
+    required String recipientName,
+    required String hotelName,
+    required String role,
+    required String temporaryPassword,
+    required String appName,
+    required String appLinkAndroid,
+    required String appLinkIos,
+  }) {
+    return _send(
+      type: 'hotel_staff_created',
+      to: to,
+      recipientName: recipientName,
+      apartmentName: hotelName,
+      loginEmail: to,
+      temporaryPassword: temporaryPassword,
+      extraPayload: {
+        'role': role,
+        'hotelName': hotelName,
+        'hotel_name': hotelName,
+        'appName': appName,
+        'app_name': appName,
+        'appLinkAndroid': appLinkAndroid,
+        'app_link_android': appLinkAndroid,
+        'appLinkIos': appLinkIos,
+        'app_link_ios': appLinkIos,
+        // Keep loginEmail visible in email body
+        'loginEmail': to,
+        'login_email': to,
+      },
+    );
+  }
+
   static Future<StayfixEmailResult> _send({
     required String type,
     required String to,
@@ -71,6 +105,7 @@ class StayfixEmailService {
     required String apartmentName,
     required String loginEmail,
     required String temporaryPassword,
+    Map<String, dynamic>? extraPayload,
   }) async {
     final webAppUrl = await AppEnv.get(
       'STAYFIX_EMAIL_WEB_APP_URL',
@@ -96,10 +131,14 @@ class StayfixEmailService {
         'STAYFIX_EMAIL_SECRET': secret,
         'type': type,
         'to': to,
+        'to_email': to,
         'recipientName': recipientName,
+        'name': recipientName,
         'apartmentName': apartmentName,
         'loginEmail': loginEmail,
         'temporaryPassword': temporaryPassword,
+        'password': temporaryPassword,
+        if (extraPayload != null) ...extraPayload,
       };
       final client = http.Client();
       try {
@@ -142,17 +181,17 @@ class StayfixEmailService {
     required http.StreamedResponse response,
   }) async {
     if (!_isRedirect(response.statusCode)) {
-      return http.Response.fromStream(response);
+      return http.Response.fromStream(response).timeout(_timeout);
     }
 
     final locationHeader = response.headers['location']?.trim() ?? '';
     if (locationHeader.isEmpty) {
-      return http.Response.fromStream(response);
+      return http.Response.fromStream(response).timeout(_timeout);
     }
 
     final redirectedUri = Uri.tryParse(locationHeader);
     if (redirectedUri == null) {
-      return http.Response.fromStream(response);
+      return http.Response.fromStream(response).timeout(_timeout);
     }
 
     final redirectedResponse = await client.get(

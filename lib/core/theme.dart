@@ -86,7 +86,7 @@ class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: SfColors.gold, width: 1.5),
+          borderSide: const BorderSide(color: SfColors.gold, width: 1.5), // blue
         ),
       ),
     );

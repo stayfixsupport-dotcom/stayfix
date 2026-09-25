@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:async';
 import 'package:crypto/crypto.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -55,6 +56,7 @@ class HotelProvider extends ChangeNotifier {
   List<Room> _rooms = [];
 
   bool _isLoading = false;
+  bool _isCreatingHotel = false; // Guard to prevent duplicate hotel creation
   String? _lastAuthErrorMessage;
   bool _lastAuthCreatedAccount = false;
 
@@ -73,7 +75,24 @@ class HotelProvider extends ChangeNotifier {
     return sortedRooms;
   }
 
-  bool get isDirector => _currentUser?.role == UserRoles.director;
+  bool get isDirector {
+    if (_currentUser == null) return false;
+    final r = _currentUser!.role.toLowerCase();
+    if (r == UserRoles.director.toLowerCase() || r == 'director' || r == 'directeur' || r == 'admin') {
+      return true;
+    }
+    return false;
+  }
+
+  /// Returns the best-available hotel name for the currently logged-in user.
+  /// Works for both hotel directors (selectedHotel is set) and sub-managers
+  /// (selectedHotel is null but the hotel is loaded via myHotels / hotelId).
+  String get currentHotelName {
+    if (_selectedHotel != null) return _selectedHotel!.name;
+    if (_myHotels.isNotEmpty) return _myHotels.first.name;
+    return 'Hôtel';
+  }
+
   Set<String> get currentAuthProviders =>
       _auth.currentUser?.providerData
           .map((provider) => provider.providerId)
@@ -82,7 +101,8 @@ class HotelProvider extends ChangeNotifier {
       <String>{};
 
   HotelProvider() {
-    tryAutoLogin();
+    // tryAutoLogin() is called explicitly by SplashPage._resolveNextScreen()
+    // to avoid duplicate Firestore reads on startup.
   }
 
   void setLoading(bool value) {
@@ -103,13 +123,18 @@ class HotelProvider extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       final String? savedUserId = prefs.getString('userId');
+      final bool savedIsDirector = prefs.getBool('isDirector') ?? false;
       final authUser = _auth.currentUser;
 
       if (savedUserId != null && savedUserId.isNotEmpty) {
-        if (authUser == null || authUser.uid.trim() != savedUserId.trim()) {
-          await logout();
-          return;
+        // Director accounts use Firebase Auth — verify the session is intact.
+        if (savedIsDirector) {
+          if (authUser == null || authUser.uid.trim() != savedUserId.trim()) {
+            await logout();
+            return;
+          }
         }
+        // Staff accounts don't use Firebase Auth — just load by Firestore ID.
         await _fetchUserData(savedUserId);
 
         if (_currentUser != null) {
@@ -138,6 +163,8 @@ class HotelProvider extends ChangeNotifier {
         try {
           UserCredential cred = await _auth.signInWithEmailAndPassword(
               email: input, password: password);
+          // Firebase Auth succeeded — this is definitely a Director/Firebase account.
+          // Load user data separately with its own error handling.
           await _fetchUserData(cred.user!.uid);
           if (PropertyScopeService.isStayFixJobOnly(
                   AppSessionService.currentUserData) ||
@@ -146,12 +173,18 @@ class HotelProvider extends ChangeNotifier {
             await logout();
             return false;
           }
-          await _saveSession(cred.user!.uid);
+          final isDir = _currentUser?.role == UserRoles.director;
+          await _saveSession(cred.user!.uid, isDirector: isDir);
           listenToMyHotels();
           return true;
-        } catch (e) {
+        } on FirebaseAuthException catch (_) {
+          // Firebase Auth failed (wrong password, user not found) — try staff login.
           return await _loginAsStaff(
               field: 'email', value: input, password: password);
+        } catch (e) {
+          // Data loading error after successful auth — don't fall through to staff.
+          debugPrint("Post-auth data error: $e");
+          return false;
         }
       } else {
         return await _loginAsStaff(
@@ -199,9 +232,10 @@ class HotelProvider extends ChangeNotifier {
     return false;
   }
 
-  Future<void> _saveSession(String userId) async {
+  Future<void> _saveSession(String userId, {bool isDirector = false}) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('userId', userId);
+    await prefs.setBool('isDirector', isDirector);
   }
 
   Future<void> logout() async {
@@ -224,6 +258,7 @@ class HotelProvider extends ChangeNotifier {
     _rooms = [];
     _myHotels = [];
     _hotelStaff = [];
+    _isCreatingHotel = false;
 
     notifyListeners();
 
@@ -252,7 +287,7 @@ class HotelProvider extends ChangeNotifier {
     _rooms = [];
     _roomsSubscription?.cancel();
     if (hotel != null) {
-      fetchHotelStaff();
+      // listenToHotelData() calls fetchHotelStaff() internally — no need to call it here too
       listenToHotelData();
     }
     notifyListeners();
@@ -292,6 +327,20 @@ class HotelProvider extends ChangeNotifier {
           ownerId: data['ownerId'] ?? '',
         );
       }).toList();
+      
+      // Auto-select the first hotel to bypass the SelectionScreen
+      if (_selectedHotel == null && _myHotels.isNotEmpty) {
+        _selectedHotel = _myHotels.first;
+        // listenToHotelData() calls fetchHotelStaff() internally — no extra call needed
+        listenToHotelData();
+      } else if (_myHotels.isEmpty && _currentUser?.role == UserRoles.director) {
+        // Guard prevents duplicate hotel creation on slow-network multi-fire events
+        if (!_isCreatingHotel) {
+          _isCreatingHotel = true;
+          createHotel('Mon Hôtel', 'N/A', skipRooms: true).then((_) => _isCreatingHotel = false);
+        }
+      }
+      
       notifyListeners();
     });
   }
@@ -359,7 +408,7 @@ class HotelProvider extends ChangeNotifier {
     await batch.commit();
   }
 
-  Future<void> createHotel(String name, String location) async {
+  Future<void> createHotel(String name, String location, {bool skipRooms = true}) async {
     if (_currentUser == null) return;
     setLoading(true);
     try {
@@ -369,13 +418,36 @@ class HotelProvider extends ChangeNotifier {
         'ownerId': _currentUser!.id,
         'createdAt': FieldValue.serverTimestamp(),
       });
-      await _generateDefaultRoomsForId(docRef.id);
+      // Write the hotel ID back to the director's user document so that
+      // hotel-scoped features (messaging filters, staff visibility, etc.)
+      // can find the director's hotel via the hotelId field.
+      await _firestore.collection('users').doc(_currentUser!.id).set(
+        {'hotelId': docRef.id},
+        SetOptions(merge: true),
+      );
+      // Also update the in-memory user so it's immediately available.
+      _currentUser = HotelUser(
+        id: _currentUser!.id,
+        email: _currentUser!.email,
+        firstName: _currentUser!.firstName,
+        lastName: _currentUser!.lastName,
+        username: _currentUser!.username,
+        role: _currentUser!.role,
+        phone: _currentUser!.phone,
+        hotelId: docRef.id,
+      );
+      // By default skip room creation so hotels start with 0 rooms.
+      // Rooms can be generated on-demand when the user clicks the room button.
+      if (!skipRooms) {
+        await _generateDefaultRoomsForId(docRef.id);
+      }
     } catch (e) {
       debugPrint("Error creating hotel: $e");
     } finally {
       setLoading(false);
     }
   }
+
 
   Future<void> _generateDefaultRoomsForId(String hotelId) async {
     WriteBatch batch = _firestore.batch();
@@ -407,10 +479,47 @@ class HotelProvider extends ChangeNotifier {
     await batch.commit();
   }
 
-  Future<void> generateDefaultRooms() async {
+  Future<void> _generateCustomRoomsForId(String hotelId, int count) async {
+    WriteBatch batch = _firestore.batch();
+    int opCount = 0;
+
+    for (int i = 1; i <= count; i++) {
+      DocumentReference ref = _firestore
+          .collection('hotels')
+          .doc(hotelId)
+          .collection('rooms')
+          .doc();
+          
+      batch.set(ref, {
+        'number': i.toString(),
+        'status': 'Libre',
+        'type': 'King',
+        'floor': 'Général',
+      });
+      
+      opCount++;
+
+      // Commit and reset batch every 400 operations to stay below Firestore's 500 limit
+      if (opCount >= 400) {
+        await batch.commit();
+        batch = _firestore.batch();
+        opCount = 0;
+      }
+    }
+
+    if (opCount > 0) {
+      await batch.commit();
+    }
+  }
+
+  Future<void> generateDefaultRooms({int? count}) async {
     if (_selectedHotel != null) {
       setLoading(true);
-      await _generateDefaultRoomsForId(_selectedHotel!.id);
+      if (count != null && count > 0) {
+        await _generateCustomRoomsForId(_selectedHotel!.id, count);
+      } else {
+        await _generateDefaultRoomsForId(_selectedHotel!.id);
+      }
       setLoading(false);
     }
   }
@@ -459,11 +568,12 @@ class HotelProvider extends ChangeNotifier {
   }
 
   Future<void> fetchHotelStaff() async {
-    if (_selectedHotel == null) return;
+    final String? hotelId = _selectedHotel?.id ?? _currentUser?.hotelId;
+    if (hotelId == null || hotelId.isEmpty) return;
     try {
       var snapshot = await _firestore
           .collection('users')
-          .where('hotelId', isEqualTo: _selectedHotel!.id)
+          .where('hotelId', isEqualTo: hotelId)
           .get();
       _hotelStaff = snapshot.docs.map((doc) {
         final data = doc.data();
@@ -537,7 +647,14 @@ class HotelProvider extends ChangeNotifier {
 
       _setLastAuthCreatedAccount(createdAccount);
       await _fetchUserData(user.uid);
-      await _saveSession(user.uid);
+      final isDir = _currentUser?.role == UserRoles.director;
+      await _saveSession(user.uid, isDirector: isDir);
+      
+      if (createdAccount) {
+        // skipRooms=true: avoid the 469-document batch write at sign-up time.
+        await createHotel('Mon Hôtel', 'N/A', skipRooms: true);
+      }
+      
       listenToMyHotels();
       return true;
     } on PlatformException catch (e) {
@@ -580,7 +697,14 @@ class HotelProvider extends ChangeNotifier {
 
       _setLastAuthCreatedAccount(createdAccount);
       await _fetchUserData(user.uid);
-      await _saveSession(user.uid);
+      final isDir = _currentUser?.role == UserRoles.director;
+      await _saveSession(user.uid, isDirector: isDir);
+      
+      if (createdAccount) {
+        // skipRooms=true: avoid the 469-document batch write at sign-up time.
+        await createHotel('Mon Hôtel', 'N/A', skipRooms: true);
+      }
+      
       listenToMyHotels();
       return true;
     } on FirebaseAuthException catch (e) {
@@ -681,6 +805,13 @@ class HotelProvider extends ChangeNotifier {
       _setLastAuthCreatedAccount(true);
       AppSessionService.setCurrentUser(userId: cred.user!.uid, data: userData);
       await _saveSession(cred.user!.uid);
+      
+      // Automatically create a hotel for the new director.
+      // skipRooms=true avoids writing 469 Firestore documents during sign-up,
+      // which was the main cause of the long registration time.
+      await createHotel('Mon Hôtel', 'N/A', skipRooms: true);
+      listenToMyHotels();
+      
       notifyListeners();
       return true;
     } catch (e) {
@@ -698,20 +829,49 @@ class HotelProvider extends ChangeNotifier {
       required String phone,
       required String username,
       required String password,
-      required String role}) async {
-    if (_selectedHotel == null) return;
-    await _firestore.collection('users').add({
+      required String role,
+      String? appAccess}) async {
+    final String? hotelId = _selectedHotel?.id ?? _currentUser?.hotelId;
+    if (hotelId == null || hotelId.isEmpty) {
+      debugPrint('addStaffMember: cannot determine hotelId — aborting');
+      return;
+    }
+
+    final userData = {
       'firstName': firstName,
       'lastName': lastName,
       'email': email,
       'phone': phone,
       'username': username,
-      'password': password,
+      'password': password, // Still save it for staff-login fallback if needed
       'role': role,
-      'hotelId': _selectedHotel!.id,
+      'hotelId': hotelId,
       'addedBy': _currentUser?.id,
+      if (appAccess != null) 'appAccess': appAccess,
       'createdAt': FieldValue.serverTimestamp(),
-    });
+    };
+
+    try {
+      // Use a secondary Firebase app to create the auth account 
+      // so it doesn't log out the currently signed-in manager.
+      FirebaseApp secondaryApp = await Firebase.initializeApp(
+        name: 'SecondaryApp_${DateTime.now().millisecondsSinceEpoch}',
+        options: Firebase.app().options,
+      );
+      
+      UserCredential userCred = await FirebaseAuth.instanceFor(app: secondaryApp)
+          .createUserWithEmailAndPassword(email: email, password: password);
+          
+      String uid = userCred.user!.uid;
+      await _firestore.collection('users').doc(uid).set(userData);
+      
+      await secondaryApp.delete();
+    } catch (e) {
+      debugPrint("Error creating auth account for staff: $e");
+      // Fallback if secondary app creation fails for some reason
+      await _firestore.collection('users').add(userData);
+    }
+    
     fetchHotelStaff();
   }
 

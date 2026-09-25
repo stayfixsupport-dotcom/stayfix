@@ -695,6 +695,51 @@ class _CondoDashboardScreenState extends State<CondoDashboardScreen> {
                               },
                             ),
                           ),
+                          // ── Category shortcut buttons ──────────────────────
+                          const SizedBox(height: 12),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: _CategoryShortcutButton(
+                                    icon: LucideIcons.wrench,
+                                    label: 'Maintenance générale',
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              const IntervenantsScreen(
+                                            initialCategory:
+                                                'Maintenance generale',
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: _CategoryShortcutButton(
+                                    icon: LucideIcons.sparkles,
+                                    label: 'Ménage',
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              const IntervenantsScreen(
+                                            initialCategory: 'Ménage',
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                           if (_showsBuildingManagement) ...[
                             const SizedBox(height: 12),
                             Padding(
@@ -2273,6 +2318,92 @@ class _QuickActionCard extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Category shortcut button ────────────────────────────────────────────────
+/// A tappable card that navigates to [IntervenantsScreen] pre-filtered to a
+/// specific service category. Follows HCI guidelines: large touch target
+/// (min 48 dp height), clear icon + label, visible focus/press feedback.
+class _CategoryShortcutButton extends StatefulWidget {
+  const _CategoryShortcutButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  State<_CategoryShortcutButton> createState() =>
+      _CategoryShortcutButtonState();
+}
+
+class _CategoryShortcutButtonState extends State<_CategoryShortcutButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTap: widget.onTap,
+      child: AnimatedScale(
+        scale: _pressed ? 0.96 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 14),
+          decoration: BoxDecoration(
+            color: _pressed
+                ? kAuthGold.withValues(alpha: 0.10)
+                : _kDashCard,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: _pressed
+                  ? kAuthGold.withValues(alpha: 0.65)
+                  : _kDashBorder,
+              width: 1.2,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon circle
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                      color: kAuthGold.withValues(alpha: 0.55), width: 1.2),
+                  color: kAuthGold.withValues(alpha: 0.08),
+                ),
+                child: Icon(widget.icon, color: kAuthGold, size: 22),
+              ),
+              const SizedBox(height: 12),
+              // Label — full card width, wraps naturally
+              Text(
+                widget.label,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.inter(
+                  color: Colors.white,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

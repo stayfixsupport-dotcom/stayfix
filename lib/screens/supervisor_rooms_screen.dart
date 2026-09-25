@@ -122,7 +122,7 @@ class _SupervisorRoomsScreenState extends State<SupervisorRoomsScreen> {
       statusColor = const Color(0xFFF59E0B);
       statusText = "CHECKOUT";
     } else if (room.status.contains('Service')) {
-      statusColor = const Color(0xFF3B82F6);
+      statusColor = const Color(0xFFD6A85A);
       statusText = "NETTOYAGE";
     } else {
       statusColor = const Color(0xFF10B981);
@@ -195,7 +195,7 @@ class _SupervisorRoomsScreenState extends State<SupervisorRoomsScreen> {
               if (room.status != 'Libre')
                 _buildActionBtn(
                     icon: Icons.cleaning_services,
-                    color: const Color(0xFF3B82F6),
+                    color: const Color(0xFFD6A85A),
                     onTap: () =>
                         provider.updateRoomStatus(room.id, 'Service Normal')),
               if (room.status != 'Libre') const SizedBox(width: 8),
