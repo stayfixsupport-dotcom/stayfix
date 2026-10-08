@@ -11,16 +11,19 @@ import 'other_property_dashboard.dart';
 import 'orders/order_hub_screen.dart';
 import 'terms_screen.dart';
 import '../services/app_session_service.dart';
+import '../models/hotel_models.dart';
 import '../services/property_scope_service.dart';
 import '../services/push_notification_service.dart';
 
 Future<Widget> resolveManagerDestination() async {
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) {
+  final authUser = FirebaseAuth.instance.currentUser;
+  final userId = authUser?.uid ?? AppSessionService.currentUserId;
+  
+  if (userId == null || userId.isEmpty) {
     return const DirectorTypeScreen();
   }
 
-  return resolveSessionDestination(user.uid);
+  return resolveSessionDestination(userId);
 }
 
 Future<Widget> resolveSessionDestination(String userId) async {
@@ -58,6 +61,19 @@ Future<Widget> resolveSessionDestination(String userId) async {
       propertyType: 'building_manager',
       accessRole: accountType,
     );
+  }
+
+  // Sub-directors (Directeur Gouvernante / Maintenance / Réception) and
+  // supervisors are assigned to a hotel by the main Director — they never
+  // go through the universe-selection onboarding. Route them to OrderHubScreen.
+  final role = (data['role'] as String?)?.trim() ?? '';
+  const subDirectorRoles = {
+    UserRoles.housekeepingManager, // 'Directeur Gouvernante'
+    UserRoles.maintenanceManager,  // 'Directeur Maintenance'
+    UserRoles.receptionManager,    // 'Directeur Réception'
+  };
+  if (subDirectorRoles.contains(role) || role.startsWith(UserRoles.supervisor)) {
+    return const OrderHubScreen();
   }
 
   if (profileValue == null) {

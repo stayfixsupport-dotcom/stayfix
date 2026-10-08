@@ -40,6 +40,132 @@ class OrderService {
   //  DEPARTMENTS
   // ══════════════════════════════════════════════════════════════════════════
 
+  /// The director/manager role keys that can receive orders.
+  static const List<String> _directorRoles = [
+    'Directeur Maintenance',
+    'Directeur Gouvernante',
+    'Directeur Réception',
+  ];
+
+  static const Map<String, String> _roleToDepId = {
+    'Directeur Maintenance': 'dept_maintenance',
+    'Directeur Gouvernante': 'dept_housekeeping',
+    'Directeur Réception': 'dept_reception',
+  };
+
+  /// Streams the set of dept IDs that have at least one director-role user.
+  static Stream<Set<String>> streamDeptIdsWithDirector(String hotelId) {
+    return _db
+        .collection('users')
+        .where('hotelId', isEqualTo: hotelId)
+        .where('role', whereIn: _directorRoles)
+        .snapshots()
+        .map((snap) {
+      final ids = <String>{};
+      for (final doc in snap.docs) {
+        final role = doc.data()['role'] as String? ?? '';
+        final id = _roleToDepId[role];
+        if (id != null) ids.add(id);
+      }
+      return ids;
+    });
+  }
+
+  /// Streams a map of deptId → first director's fullName for labels.
+  /// Note: if multiple directors share a dept the last one wins here.
+  static Stream<Map<String, String>> streamDirectorNamesByDept(String hotelId) {
+    return _db
+        .collection('users')
+        .where('hotelId', isEqualTo: hotelId)
+        .where('role', whereIn: _directorRoles)
+        .snapshots()
+        .map((snap) {
+      final result = <String, String>{};
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final role = data['role'] as String? ?? '';
+        final deptId = _roleToDepId[role];
+        if (deptId == null) continue;
+        final first = (data['firstName'] as String? ?? '').trim();
+        final last  = (data['lastName']  as String? ?? '').trim();
+        final combined = '$first $last'.trim();
+        final fullName = combined.isNotEmpty ? combined
+            : (data['displayName'] as String? ?? '').trim();
+        if (fullName.isNotEmpty) result[deptId] = fullName;
+      }
+      return result;
+    });
+  }
+
+  /// Streams ALL director/manager users as individual records.
+  /// Each item has keys: id, firstName, lastName, fullName, role, deptId.
+  static Stream<List<Map<String, String>>> streamDirectorUsers(String hotelId) {
+    return _db
+        .collection('users')
+        .where('hotelId', isEqualTo: hotelId)
+        .where('role', whereIn: _directorRoles)
+        .snapshots()
+        .map((snap) {
+      return snap.docs.map((doc) {
+        final data = doc.data();
+        final role = (data['role'] as String?) ?? '';
+        final first = (data['firstName'] as String? ?? '').trim();
+        final last  = (data['lastName']  as String? ?? '').trim();
+        final combined = '$first $last'.trim();
+        final fullName = combined.isNotEmpty ? combined
+            : (data['displayName'] as String? ?? '').trim();
+        return {
+          'id': doc.id,
+          'firstName': first,
+          'lastName': last,
+          'fullName': fullName,
+          'role': role,
+          'deptId': _roleToDepId[role] ?? '',
+        };
+      }).toList();
+    });
+  }
+
+  /// Worker-role labels — the staff that a sub-director can assign orders to.
+  static const List<String> _workerRoles = [
+    'Superviseur',
+    'Houseman',
+    'Valet/Femme de chambre',
+    'Staff',
+  ];
+
+  /// Streams all worker-role staff belonging to a given hotel.
+  /// Used by sub-directors so they can send orders to their team members.
+  /// Each item has keys: id, firstName, lastName, fullName, role, deptId.
+  static Stream<List<Map<String, String>>> streamTeamUsers(String hotelId) {
+    return _db
+        .collection('users')
+        .where('hotelId', isEqualTo: hotelId)
+        .where('role', whereIn: _workerRoles)
+        .snapshots()
+        .map((snap) {
+      return snap.docs.map((doc) {
+        final data = doc.data();
+        final role = (data['role'] as String?) ?? '';
+        final first = (data['firstName'] as String? ?? '').trim();
+        final last  = (data['lastName']  as String? ?? '').trim();
+        final combined = '$first $last'.trim();
+        final fullName = combined.isNotEmpty
+            ? combined
+            : (data['displayName'] as String? ?? '').trim();
+        return {
+          'id': doc.id,
+          'firstName': first,
+          'lastName': last,
+          'fullName': fullName,
+          'role': role,
+          'deptId': '',
+        };
+      }).toList()
+        ..sort((a, b) => a['fullName']!.compareTo(b['fullName']!));
+    });
+  }
+
   /// Real-time stream of all active departments for a hotel.
   static Stream<List<OrgDepartment>> streamDepartments(String hotelId) {
     return _depts(hotelId)
@@ -87,8 +213,42 @@ class OrderService {
   //  CATEGORIES
   // ══════════════════════════════════════════════════════════════════════════
 
+  static final Set<String> _checkedHotels = {};
+
+  /// Ensures default categories are created if none exist for this hotel.
+  static Future<void> _ensureDefaultCategories(String hotelId) async {
+    if (_checkedHotels.contains(hotelId)) return;
+    _checkedHotels.add(hotelId);
+    try {
+      final snap = await _cats(hotelId).limit(1).get();
+      if (snap.docs.isEmpty) {
+        final defaults = [
+          "batterie 🔋",
+          "peinture 🎨",
+          "téléphone ☎️",
+          "électricité 🔌",
+          "autre",
+        ];
+        final batch = _db.batch();
+        for (var name in defaults) {
+          batch.set(_cats(hotelId).doc(), {
+            'name': name,
+            'isActive': true,
+            'hotelId': hotelId,
+            'createdAt': FieldValue.serverTimestamp(),
+            'createdBy': 'system',
+          });
+        }
+        await batch.commit();
+      }
+    } catch (_) {
+      // Ignore if it fails (e.g., permissions)
+    }
+  }
+
   /// Real-time stream of all active categories.
   static Stream<List<OrgCategory>> streamCategories(String hotelId) {
+    _ensureDefaultCategories(hotelId);
     return _cats(hotelId)
         .snapshots()
         .map((snap) {
@@ -96,7 +256,13 @@ class OrderService {
               .map((d) => OrgCategory.fromDoc(d))
               .where((c) => c.isActive)
               .toList();
-          list.sort((a, b) => a.name.compareTo(b.name));
+          list.sort((a, b) {
+            final aName = a.name.toLowerCase();
+            final bName = b.name.toLowerCase();
+            if (aName == 'autre') return 1;
+            if (bName == 'autre') return -1;
+            return a.createdAt.compareTo(b.createdAt);
+          });
           return list;
         });
   }
@@ -104,8 +270,17 @@ class OrderService {
   /// One-time fetch of all categories (including inactive) for admin.
   static Future<List<OrgCategory>> fetchAllCategories(
       String hotelId) async {
-    final snap = await _cats(hotelId).orderBy('name').get();
-    return snap.docs.map((d) => OrgCategory.fromDoc(d)).toList();
+    await _ensureDefaultCategories(hotelId);
+    final snap = await _cats(hotelId).get();
+    final list = snap.docs.map((d) => OrgCategory.fromDoc(d)).toList();
+    list.sort((a, b) {
+      final aName = a.name.toLowerCase();
+      final bName = b.name.toLowerCase();
+      if (aName == 'autre') return 1;
+      if (bName == 'autre') return -1;
+      return a.createdAt.compareTo(b.createdAt);
+    });
+    return list;
   }
 
   /// Create a new category.
@@ -177,15 +352,18 @@ class OrderService {
   //  ORDERS
   // ══════════════════════════════════════════════════════════════════════════
 
-  /// Real-time stream of orders for a department (active only — not completed).
+  /// Real-time stream of orders for a department OR assigned specifically to the user (active only).
   static Stream<List<OrgOrder>> streamOrdersForDept(
-      {required String hotelId, required String deptId}) {
+      {required String hotelId, required String deptId, required String userId}) {
     return _orders(hotelId)
-        .where('currentDeptId', isEqualTo: deptId)
         .where('status', whereIn: ['unseen', 'in_progress'])
         .snapshots()
         .map((snap) {
-          final list = snap.docs.map((d) => OrgOrder.fromDoc(d)).toList();
+          final list = snap.docs.map((d) => OrgOrder.fromDoc(d)).where((o) {
+            final isForDept = o.currentDeptId == deptId && deptId.isNotEmpty;
+            final isForUser = o.assignedUserIds.contains(userId);
+            return isForDept || isForUser;
+          }).toList();
           list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
           return list;
         });
@@ -217,21 +395,63 @@ class OrderService {
         });
   }
 
-  /// Real-time stream of completed (archived) orders for a specific department (or all).
+  /// Real-time stream of completed (archived) orders for a specific department/user (or all).
   static Stream<List<OrgOrder>> streamArchivedOrders(
-      {required String hotelId, String? deptId}) {
-    Query<Map<String, dynamic>> query =
-        _orders(hotelId).where('status', isEqualTo: 'completed');
-    if (deptId != null && deptId.isNotEmpty) {
-      query = query.where('currentDeptId', isEqualTo: deptId);
+      {required String hotelId, String? deptId, String? userId}) {
+    if (deptId == null || deptId.isEmpty || userId == null || userId.isEmpty) {
+      // General director (all orders)
+      return _orders(hotelId)
+          .where('status', isEqualTo: 'completed')
+          .limit(100)
+          .snapshots()
+          .map((snap) {
+        final list = snap.docs.map((d) => OrgOrder.fromDoc(d)).toList();
+        list.sort((a, b) => (b.completedAt ?? b.createdAt)
+            .compareTo(a.completedAt ?? a.createdAt));
+        return list;
+      });
     }
-    // Limit to the most recent 100 to prevent massive delays on app launch
-    return query.limit(100).snapshots().map((snap) {
-      final list = snap.docs.map((d) => OrgOrder.fromDoc(d)).toList();
-      list.sort((a, b) => (b.completedAt ?? b.createdAt)
-          .compareTo(a.completedAt ?? a.createdAt));
-      return list;
+
+    final StreamController<List<OrgOrder>> controller = StreamController<List<OrgOrder>>.broadcast();
+
+    List<OrgOrder> deptOrders = [];
+    List<OrgOrder> userOrders = [];
+
+    void emit() {
+      final combinedMap = <String, OrgOrder>{};
+      for (final o in deptOrders) combinedMap[o.id] = o;
+      for (final o in userOrders) combinedMap[o.id] = o;
+      final combined = combinedMap.values.toList();
+      combined.sort((a, b) => (b.completedAt ?? b.createdAt).compareTo(a.completedAt ?? a.createdAt));
+      controller.add(combined.take(100).toList());
+    }
+
+    final sub1 = _orders(hotelId)
+        .where('status', isEqualTo: 'completed')
+        .where('currentDeptId', isEqualTo: deptId)
+        .limit(100)
+        .snapshots()
+        .listen((snap) {
+      deptOrders = snap.docs.map((d) => OrgOrder.fromDoc(d)).toList();
+      emit();
     });
+
+    final sub2 = _orders(hotelId)
+        .where('status', isEqualTo: 'completed')
+        .where('assignedUserIds', arrayContains: userId)
+        .limit(100)
+        .snapshots()
+        .listen((snap) {
+      userOrders = snap.docs.map((d) => OrgOrder.fromDoc(d)).toList();
+      emit();
+    });
+
+    controller.onCancel = () {
+      sub1.cancel();
+      sub2.cancel();
+    };
+
+    return controller.stream;
   }
 
   /// Fetch completed orders for a specific date (for calendar).
@@ -281,6 +501,10 @@ class OrderService {
     String? locationDetail,
     required String destDeptId,
     required String destDeptName,
+    List<String> assignedUserIds = const [],
+    List<String> assignedUserNames = const [],
+    String? assigneeName,
+    bool isForSelf = false,
   }) async {
     final batch = _db.batch();
 
@@ -304,6 +528,11 @@ class OrderService {
       'currentDeptName': destDeptName,
       'initialDeptId': destDeptId,
       'initialDeptName': destDeptName,
+      'assignedUserIds': assignedUserIds,
+      'assignedUserNames': assignedUserNames,
+      if (assigneeName != null && assigneeName.isNotEmpty)
+        'assigneeName': assigneeName,
+      if (isForSelf) 'isForSelf': true,
       'status': 'unseen',
       'createdAt': FieldValue.serverTimestamp(),
     };
@@ -320,18 +549,39 @@ class OrderService {
       'timestamp': FieldValue.serverTimestamp(),
     });
 
-    // Notification to destination department members
-    final notifRef = _notifs(hotelId).doc();
-    batch.set(notifRef, {
-      'hotelId': hotelId,
-      'deptId': destDeptId,
-      'orderId': orderRef.id,
-      'title': 'Nouvel ordre reçu',
-      'message':
-          'Un nouvel ordre vous a été envoyé par $creatorName ($creatorDeptName).',
-      'read': false,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
+    // Notifications
+    if (assignedUserIds.isNotEmpty) {
+      // Notify each assigned user specifically
+      for (final uid in assignedUserIds) {
+        final notifRef = _notifs(hotelId).doc();
+        batch.set(notifRef, {
+          'hotelId': hotelId,
+          'deptId': '', // Personal notification
+          'userId': uid,
+          'orderId': orderRef.id,
+          'title': isForSelf ? 'Ordre personnel créé' : 'Nouvel ordre assigné',
+          'message': isForSelf
+              ? '$creatorName a créé un ordre personnel.'
+              : 'Un nouvel ordre vous a été assigné par $creatorName ($creatorDeptName).',
+          'read': false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } else {
+      // Notify destination department members
+      final notifRef = _notifs(hotelId).doc();
+      batch.set(notifRef, {
+        'hotelId': hotelId,
+        'deptId': destDeptId,
+        'orderId': orderRef.id,
+        'title': isForSelf ? 'Ordre personnel créé' : 'Nouvel ordre reçu',
+        'message': isForSelf
+            ? '$creatorName a créé un ordre pour lui-même.'
+            : 'Un nouvel ordre vous a été envoyé par $creatorName ($creatorDeptName).',
+        'read': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
 
     await batch.commit();
     return orderRef.id;
@@ -566,7 +816,7 @@ class OrderService {
   //  NOTIFICATIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  /// Real-time stream of notifications for a department.
+  /// Real-time stream of notifications for a department (legacy, scoped to dept only).
   static Stream<List<OrderNotification>> streamNotificationsForDept(
       {required String hotelId, required String deptId}) {
     return _notifs(hotelId)
@@ -576,6 +826,60 @@ class OrderService {
         .snapshots()
         .map((snap) =>
             snap.docs.map((d) => OrderNotification.fromDoc(d)).toList());
+  }
+
+  /// Real-time stream of notifications for a user — merges dept notifications
+  /// with any personal (userId-targeted) notifications.
+  static Stream<List<OrderNotification>> streamNotificationsForUser({
+    required String hotelId,
+    required String deptId,
+    required String userId,
+  }) {
+    final StreamController<List<OrderNotification>> controller =
+        StreamController<List<OrderNotification>>.broadcast();
+
+    List<OrderNotification> deptNotifs = [];
+    List<OrderNotification> userNotifs = [];
+
+    void emit() {
+      final combinedMap = <String, OrderNotification>{};
+      for (final n in deptNotifs) combinedMap[n.id] = n;
+      for (final n in userNotifs) combinedMap[n.id] = n;
+      final combined = combinedMap.values.toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      controller.add(combined.take(50).toList());
+    }
+
+    final sub1 = deptId.isNotEmpty
+        ? _notifs(hotelId)
+            .where('deptId', isEqualTo: deptId)
+            .orderBy('createdAt', descending: true)
+            .limit(50)
+            .snapshots()
+            .listen((snap) {
+            deptNotifs = snap.docs.map((d) => OrderNotification.fromDoc(d)).toList();
+            emit();
+          })
+        : Stream<QuerySnapshot<Map<String, dynamic>>>.empty().listen((_) {});
+
+    final sub2 = userId.isNotEmpty
+        ? _notifs(hotelId)
+            .where('userId', isEqualTo: userId)
+            .orderBy('createdAt', descending: true)
+            .limit(50)
+            .snapshots()
+            .listen((snap) {
+            userNotifs = snap.docs.map((d) => OrderNotification.fromDoc(d)).toList();
+            emit();
+          })
+        : Stream<QuerySnapshot<Map<String, dynamic>>>.empty().listen((_) {});
+
+    controller.onCancel = () {
+      sub1.cancel();
+      sub2.cancel();
+    };
+
+    return controller.stream;
   }
 
   /// Mark a notification as read.

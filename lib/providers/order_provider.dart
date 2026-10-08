@@ -9,26 +9,38 @@ class OrderProvider extends ChangeNotifier {
   // ── Configuration ──────────────────────────────────────────────────────────
   String? _hotelId;
   String? _currentDeptId;
+  String? _currentUserId;
   bool _isDirector = false;
+  String _userRole = ''; // the role of the logged-in user
 
   // ── State ──────────────────────────────────────────────────────────────────
-  List<OrgDepartment> _departments = [
-    OrgDepartment(id: 'dept_maintenance', hotelId: '', name: 'Maintenance', isActive: true, createdAt: DateTime(2024)),
-    OrgDepartment(id: 'dept_housekeeping', hotelId: '', name: 'Propreté', isActive: true, createdAt: DateTime(2024)),
-    OrgDepartment(id: 'dept_reception', hotelId: '', name: 'Réception', isActive: true, createdAt: DateTime(2024)),
+  static final List<OrgDepartment> _allDepartments = [
+    OrgDepartment(id: 'dept_maintenance', hotelId: '', name: 'Maintenance', isActive: true, createdAt: DateTime.utc(2024)),
+    OrgDepartment(id: 'dept_housekeeping', hotelId: '', name: 'Propreté', isActive: true, createdAt: DateTime.utc(2024)),
+    OrgDepartment(id: 'dept_reception', hotelId: '', name: 'Réception', isActive: true, createdAt: DateTime.utc(2024)),
   ];
+
+  /// Dept IDs that have at least one director-role user — null means not yet loaded.
+  Set<String>? _deptIdsWithDirector;
+  /// Map of deptId → director's fullName.
+  Map<String, String> _directorNames = {};
   List<OrgCategory> _categories = [];
   List<OrgOrder> _activeOrders = [];
   List<OrgOrder> _inboxOrders = [];   // orders received by this dept
   List<OrgOrder> _sentOrders = [];    // orders sent by this dept
   List<OrgOrder> _archivedOrders = [];
   List<OrderNotification> _notifications = [];
+  /// Each item: {id, firstName, lastName, fullName, role, deptId}
+  List<Map<String, String>> _directorUsers = [];
 
   bool _isLoading = false;
   String? _error;
 
   // ── Stream Subscriptions ───────────────────────────────────────────────────
   StreamSubscription<List<OrgDepartment>>? _deptsSubscription;
+  StreamSubscription<Set<String>>? _directorDeptsSubscription;
+  StreamSubscription<Map<String, String>>? _directorNamesSubscription;
+  StreamSubscription<List<Map<String, String>>>? _directorUsersSubscription;
   StreamSubscription<List<OrgCategory>>? _catsSubscription;
   StreamSubscription<List<OrgOrder>>? _ordersSubscription;
   StreamSubscription<List<OrgOrder>>? _sentOrdersSubscription;
@@ -40,9 +52,21 @@ class OrderProvider extends ChangeNotifier {
   String? get currentDeptId => _currentDeptId;
   bool get isDirector => _isDirector;
 
-  List<OrgDepartment> get departments => _departments;
+  /// Returns only departments that have at least one director assigned.
+  /// Falls back to all departments while the stream hasn't loaded yet.
+  List<OrgDepartment> get departments {
+    final ids = _deptIdsWithDirector;
+    if (ids == null) return _allDepartments; // not yet loaded → show all
+    return _allDepartments.where((d) => ids.contains(d.id)).toList();
+  }
+  /// Map of deptId → director's fullName (empty string if not yet loaded).
+  Map<String, String> get directorNames => _directorNames;
+  /// All individual director/manager users (one entry per person).
+  List<Map<String, String>> get directorUsers => _directorUsers;
   List<OrgCategory> get categories => _categories;
   List<OrgOrder> get activeOrders => _activeOrders;
+  /// Orders sent BY this department (outbox). Separate from inbox.
+  List<OrgOrder> get sentOrders => _sentOrders;
   List<OrgOrder> get archivedOrders => _archivedOrders;
   List<OrderNotification> get notifications => _notifications;
 
@@ -60,8 +84,8 @@ class OrderProvider extends ChangeNotifier {
 
   List<OrgDepartment> get otherDepartments =>
       _currentDeptId == null
-          ? _departments
-          : _departments
+          ? departments
+          : departments
               .where((d) => d.id != _currentDeptId)
               .toList();
 
@@ -73,12 +97,16 @@ class OrderProvider extends ChangeNotifier {
     required String hotelId,
     required String deptId,
     required bool isDirector,
+    String? userId,
+    String? userRole,
   }) {
-    if (_hotelId == hotelId && _currentDeptId == deptId && _isDirector == isDirector) return;
+    if (_hotelId == hotelId && _currentDeptId == deptId && _isDirector == isDirector && _currentUserId == userId) return;
 
     _hotelId = hotelId;
     _currentDeptId = deptId;
     _isDirector = isDirector;
+    _currentUserId = userId;
+    _userRole = userRole ?? '';
 
     _cancelAll();
     _subscribeAll();
@@ -90,12 +118,39 @@ class OrderProvider extends ChangeNotifier {
     final dept = _currentDeptId;
     if (hotel == null || dept == null) return;
 
-    // Departments are static, no need to stream
-    // _deptsSubscription =
-    //     OrderService.streamDepartments(hotel).listen((data) {
-    //   _departments = data;
-    //   notifyListeners();
-    // }, onError: (e) => _setError(e.toString()));
+    // Stream which dept IDs have a director assigned — filters the dropdown.
+    _directorDeptsSubscription =
+        OrderService.streamDeptIdsWithDirector(hotel).listen((ids) {
+      _deptIdsWithDirector = ids;
+      notifyListeners();
+    }, onError: (_) {
+      // On error show all depts as a safe fallback.
+      _deptIdsWithDirector = {'dept_maintenance', 'dept_housekeeping', 'dept_reception'};
+      notifyListeners();
+    });
+
+    // Stream director names for the dropdown labels.
+    _directorNamesSubscription =
+        OrderService.streamDirectorNamesByDept(hotel).listen((names) {
+      _directorNames = names;
+      notifyListeners();
+    }, onError: (_) {});
+
+    // Stream recipient users for the "Envoyer à" picker in create_order.
+    // - Director Général → shows the three sub-directors.
+    // - Sub-directors and others → shows all worker-role team members.
+    final isSubDirector = [
+      'Directeur Maintenance',
+      'Directeur Gouvernante',
+      'Directeur Réception',
+    ].contains(_userRole);
+    final recipientStream = isSubDirector
+        ? OrderService.streamTeamUsers(hotel)
+        : OrderService.streamDirectorUsers(hotel);
+    _directorUsersSubscription = recipientStream.listen((users) {
+      _directorUsers = users;
+      notifyListeners();
+    }, onError: (_) { _directorUsers = []; });
 
     // Categories
     _catsSubscription =
@@ -123,40 +178,54 @@ class OrderProvider extends ChangeNotifier {
       // Directors have no dept-scoped notification stream.
       // (They see global order state directly via the orders stream.)
     } else {
-      // Active orders — ONLY orders assigned to this target department!
+      final uid = _currentUserId ?? '';
+
+      // Active orders — department inbox + orders personally assigned to this user.
       _ordersSubscription = OrderService.streamOrdersForDept(
-          hotelId: hotel, deptId: dept).listen((data) {
+          hotelId: hotel, deptId: dept, userId: uid).listen((data) {
         _inboxOrders = data;
-        _activeOrders = List.from(data);
-        notifyListeners();
+        _updateActiveOrders();
       }, onError: (e) => _setError(e.toString()));
 
       // Sent orders — tracked separately, NOT mixed into incoming active orders
       _sentOrdersSubscription = OrderService.streamOrdersCreatedByDept(
           hotelId: hotel, deptId: dept).listen((data) {
         _sentOrders = data;
-        notifyListeners();
+        _updateActiveOrders();
       }, onError: (e) => _setError(e.toString()));
 
-      // Archive — ONLY completed orders for this target department!
+      // Archive — completed orders for this dept OR personally assigned to this user.
       _archiveSubscription =
-          OrderService.streamArchivedOrders(hotelId: hotel, deptId: dept)
+          OrderService.streamArchivedOrders(hotelId: hotel, deptId: dept, userId: uid)
               .listen((data) {
         _archivedOrders = data;
         notifyListeners();
       }, onError: (e) => _setError(e.toString()));
 
-      // Notifications — scoped to this target department
-      if (dept.isNotEmpty) {
+      // Notifications — dept-scoped + user-specific personal notifications.
+      if (dept.isNotEmpty || uid.isNotEmpty) {
         _notifsSubscription =
-            OrderService.streamNotificationsForDept(
-                    hotelId: hotel, deptId: dept)
+            OrderService.streamNotificationsForUser(
+                    hotelId: hotel, deptId: dept, userId: uid)
                 .listen((data) {
           _notifications = data;
           notifyListeners();
         }, onError: (e) => _setError(e.toString()));
       }
     }
+  }
+
+  void _updateActiveOrders() {
+    final uniqueOrders = <String, OrgOrder>{};
+    for (var o in _inboxOrders) {
+      uniqueOrders[o.id] = o;
+    }
+    for (var o in _sentOrders) {
+      uniqueOrders[o.id] = o;
+    }
+    _activeOrders = uniqueOrders.values.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    notifyListeners();
   }
 
   /// Switch the active department view (for directors or managers switching context).
@@ -170,6 +239,9 @@ class OrderProvider extends ChangeNotifier {
 
   void _cancelAll() {
     _deptsSubscription?.cancel();
+    _directorDeptsSubscription?.cancel();
+    _directorNamesSubscription?.cancel();
+    _directorUsersSubscription?.cancel();
     _catsSubscription?.cancel();
     _ordersSubscription?.cancel();
     _sentOrdersSubscription?.cancel();
@@ -202,6 +274,10 @@ class OrderProvider extends ChangeNotifier {
     String? locationDetail,
     required String destDeptId,
     required String destDeptName,
+    List<String> assignedUserIds = const [],
+    List<String> assignedUserNames = const [],
+    String? assigneeName,
+    bool isForSelf = false,
   }) async {
     final hotel = _hotelId;
     if (hotel == null) return null;
@@ -221,6 +297,10 @@ class OrderProvider extends ChangeNotifier {
         locationDetail: locationDetail,
         destDeptId: destDeptId,
         destDeptName: destDeptName,
+        assignedUserIds: assignedUserIds,
+        assignedUserNames: assignedUserNames,
+        assigneeName: assigneeName,
+        isForSelf: isForSelf,
       );
       return id;
     } catch (e) {

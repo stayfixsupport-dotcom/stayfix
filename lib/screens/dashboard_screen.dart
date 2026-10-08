@@ -11,6 +11,9 @@ import '../providers/hotel_provider.dart';
 import '../providers/order_provider.dart';
 import 'add_staff_screen.dart';
 import 'auth_screen.dart';
+import 'intervenants_screen.dart';
+import 'team_list_screen.dart';
+import 'orders/order_archive_screen.dart';
 import 'room_list_screen.dart';
 import 'supervisor_dashboard.dart';
 import '../widgets/settings_drawer.dart';
@@ -111,7 +114,6 @@ class _DashboardScreenState extends State<DashboardScreen>
               ],
             ),
           ),
-          floatingActionButton: _buildFab(context, user),
         );
       },
     );
@@ -185,14 +187,19 @@ class _DashboardScreenState extends State<DashboardScreen>
     final theme = Theme.of(context);
     final isDark = Provider.of<ThemeProvider>(context).isDarkMode;
 
-    if (user.role == UserRoles.director) {
+    if (user.role == UserRoles.director ||
+        [
+          UserRoles.housekeepingManager,
+          UserRoles.maintenanceManager,
+          UserRoles.receptionManager
+        ].contains(user.role)) {
       return Expanded(
         child: SingleChildScrollView(
           physics: const BouncingScrollPhysics(),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildDirectorOverview(context, isDark, theme),
+              _buildDirectorOverview(context, isDark, theme, user),
               const SizedBox(height: 16),
               _buildQuickActions(context, isDark, theme, user),
               const SizedBox(height: 24),
@@ -302,11 +309,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       );
     }
 
-    bool canViewRooms = [
-      UserRoles.housekeepingManager,
-      UserRoles.maintenanceManager,
-      UserRoles.receptionManager
-    ].contains(user.role);
+    bool canViewRooms = false; // The old view is no longer used by sub-directors
     if (canViewRooms) {
       return Expanded(
         child: Column(
@@ -417,31 +420,36 @@ class _DashboardScreenState extends State<DashboardScreen>
             const SizedBox(height: 8),
             Expanded(
               flex: 1,
-              child: provider.hotelStaff.isEmpty
-                  ? Center(
+              child: Builder(
+                builder: (context) {
+                  final teamList = provider.hotelStaff.where((u) {
+                    if (u.role == UserRoles.director || u.role == user.role) return false;
+                    if (user.role == UserRoles.receptionManager) {
+                      return u.role == UserRoles.staff;
+                    } else if (user.role == UserRoles.maintenanceManager) {
+                      return u.role == UserRoles.supervisor;
+                    } else if (user.role == UserRoles.housekeepingManager) {
+                      return u.role == UserRoles.housekeeping || u.role == UserRoles.houseman;
+                    }
+                    return false;
+                  }).toList();
+
+                  if (teamList.isEmpty) {
+                    return Center(
                       child: Text(
                         "Aucune équipe.",
                         style: GoogleFonts.inter(
                           color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
                         ),
                       ),
-                    )
-                  : ListView(
-                      children: provider.hotelStaff
-                          .where((u) {
-                            if (u.role == UserRoles.director || u.role == user.role) return false;
-                            if (user.role == UserRoles.receptionManager) {
-                              return u.role == UserRoles.staff;
-                            } else if (user.role == UserRoles.maintenanceManager) {
-                              return u.role == UserRoles.supervisor;
-                            } else if (user.role == UserRoles.housekeepingManager) {
-                              return u.role == UserRoles.housekeeping || u.role == UserRoles.houseman;
-                            }
-                            return false;
-                          })
-                          .map((staff) => _buildStaffTile(staff))
-                          .toList(),
-                    ),
+                    );
+                  }
+
+                  return ListView(
+                    children: teamList.map((staff) => _buildStaffTile(staff)).toList(),
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -769,25 +777,6 @@ class _DashboardScreenState extends State<DashboardScreen>
     return LucideIcons.user;
   }
 
-  Widget? _buildFab(BuildContext context, HotelUser user) {
-    final isDark = Provider.of<ThemeProvider>(context).isDarkMode;
-    if (user.role == UserRoles.director ||
-        [UserRoles.housekeeping, UserRoles.houseman, UserRoles.staff]
-            .contains(user.role)) {
-      return null;
-    }
-    return FloatingActionButton(
-      backgroundColor: isDark ? SfColors.gold : SfColors.goldDark,
-      child: const Icon(LucideIcons.userPlus, color: Colors.white),
-      onPressed: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => AddStaffScreen(currentUserRole: user.role),
-        ),
-      ),
-    );
-  }
-
   Widget _statCard(String title, String value, IconData icon) {
     final theme = Theme.of(context);
     final isDark = Provider.of<ThemeProvider>(context).isDarkMode;
@@ -1033,12 +1022,20 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  Widget _buildDirectorOverview(BuildContext context, bool isDark, ThemeData theme) {
+  Widget _buildDirectorOverview(BuildContext context, bool isDark, ThemeData theme, HotelUser user) {
     final hotelProvider = Provider.of<HotelProvider>(context);
     final orderProvider = Provider.of<OrderProvider>(context);
     final totalRooms = hotelProvider.rooms.length;
     final cleanRooms = hotelProvider.rooms.where((r) => r.status == 'Libre').length;
-    final totalStaff = hotelProvider.hotelStaff.length;
+    final teamList = hotelProvider.hotelStaff.where((u) {
+      if (user.role == UserRoles.director) return u.role != UserRoles.director;
+      if (u.role == UserRoles.director || u.role == user.role) return false;
+      if (user.role == UserRoles.receptionManager) return u.role == UserRoles.staff;
+      if (user.role == UserRoles.maintenanceManager) return u.role.startsWith(UserRoles.supervisor);
+      if (user.role == UserRoles.housekeepingManager) return u.role == UserRoles.housekeeping || u.role == UserRoles.houseman || u.role.startsWith(UserRoles.supervisor);
+      return false;
+    }).toList();
+    final totalStaff = teamList.length;
     final activeOrders = orderProvider.activeOrders.length;
     final inProgress = orderProvider.inProgressOrderCount;
 
@@ -1142,10 +1139,12 @@ class _DashboardScreenState extends State<DashboardScreen>
                 accentColor: const Color(0xFFA78BFA),
                 isDark: isDark,
                 onTap: () {
-                  final u = hotelProvider.currentUser;
-                  if (u != null) {
-                    _showAddDirectorModal(context, u);
-                  }
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const TeamListScreen(),
+                    ),
+                  );
                 },
               ),
             ),
@@ -1159,9 +1158,12 @@ class _DashboardScreenState extends State<DashboardScreen>
                 accentColor: SfColors.success,
                 isDark: isDark,
                 onTap: () {
-                  if (widget.onOpenOrders != null) {
-                    widget.onOpenOrders!();
-                  }
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const OrderArchiveScreen(),
+                    ),
+                  );
                 },
               ),
             ),
@@ -1282,7 +1284,14 @@ class _DashboardScreenState extends State<DashboardScreen>
                 icon: LucideIcons.userPlus,
                 accentColor: SfColors.gold,
                 isDark: isDark,
-                onTap: () => _showAddDirectorModal(context, user),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AddStaffScreen(currentUserRole: user.role),
+                    ),
+                  );
+                },
               ),
             ),
             const SizedBox(width: 10),

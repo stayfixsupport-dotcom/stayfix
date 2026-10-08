@@ -393,7 +393,7 @@ class _OrderListState extends State<_OrderList> {
             opacity: isLoading ? 0.6 : 1.0,
             child: OrderCard(
               order: order,
-              showDepartment: isDirector,
+              showDepartment: isDirector || !isDeptMember,
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(

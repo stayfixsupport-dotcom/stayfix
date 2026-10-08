@@ -78,7 +78,11 @@ class HotelProvider extends ChangeNotifier {
   bool get isDirector {
     if (_currentUser == null) return false;
     final r = _currentUser!.role.toLowerCase();
-    if (r == UserRoles.director.toLowerCase() || r == 'director' || r == 'directeur' || r == 'admin') {
+    if (r == UserRoles.director.toLowerCase() ||
+        r == UserRoles.maintenanceManager.toLowerCase() ||
+        r == UserRoles.housekeepingManager.toLowerCase() ||
+        r == UserRoles.receptionManager.toLowerCase() ||
+        r == 'director' || r == 'directeur' || r == 'admin') {
       return true;
     }
     return false;
@@ -134,14 +138,70 @@ class HotelProvider extends ChangeNotifier {
             return;
           }
         }
-        // Staff accounts don't use Firebase Auth — just load by Firestore ID.
-        await _fetchUserData(savedUserId);
+        // For Firebase-Auth accounts that are NOT the Director Général
+        // (e.g. sub-directors and supervisors created via addStaffMember),
+        // the Firebase Auth session may still be alive. Validate that the
+        // live Firebase Auth UID matches the saved userId. If there is a
+        // Firebase Auth session for a DIFFERENT account, sign it out so we
+        // don't accidentally expose cross-account data.
+        if (!savedIsDirector && authUser != null &&
+            authUser.uid.trim() != savedUserId.trim()) {
+          // Mismatch: a different account is signed in to Firebase Auth.
+          // Sign it out so subsequent logins start clean.
+          try { await _auth.signOut(); } catch (_) {}
+        } else if (!savedIsDirector && authUser != null &&
+            authUser.uid.trim() == savedUserId.trim()) {
+          // Firebase Auth session is intact for a non-director Firebase account.
+          // Update prefs so the next cold-start also validates correctly.
+          await _saveSession(savedUserId, isDirector: false);
+        }
+
+        // If there is a live Firebase Auth session, resolve the best-ranked
+        // document by email BEFORE loading anything.  This prevents loading
+        // a stale Staff doc (with appAccess='stayfix_job') and immediately
+        // logging out due to the scope check below.
+        String resolvedId = savedUserId;
+        final liveAuthUser = _auth.currentUser;
+        if (liveAuthUser != null) {
+          try {
+            final email = liveAuthUser.email ?? '';
+            if (email.isNotEmpty) {
+              final emailQuery = await _firestore
+                  .collection('users')
+                  .where('email', isEqualTo: email.trim())
+                  .get();
+              if (emailQuery.docs.isNotEmpty) {
+                resolvedId = _pickBestUserDoc(emailQuery.docs).id;
+              }
+            }
+          } catch (_) {
+            // Email query failed — keep savedUserId as fallback.
+          }
+        }
+
+        await _fetchUserData(resolvedId);
+
+        // If the resolved doc is different from what was saved, update the
+        // persisted session so the next cold-start uses the correct ID.
+        if (resolvedId != savedUserId && _currentUser != null) {
+          await _saveSession(resolvedId,
+              isDirector: _currentUser?.role == UserRoles.director);
+        }
 
         if (_currentUser != null) {
-          listenToMyHotels();
-          if (_currentUser!.hotelId != null) {
+          // For the Director Général, listenToMyHotels() auto-selects their hotel
+          // via the ownerId index.  For every other role (sub-director, supervisor,
+          // staff) the hotel is referenced directly via hotelId.
+          if (_currentUser!.role == UserRoles.director) {
+            listenToMyHotels();
+          } else if (_currentUser!.hotelId != null &&
+              _currentUser!.hotelId!.isNotEmpty) {
             await _fetchHotelById(_currentUser!.hotelId!);
             listenToHotelData();
+          } else {
+            // Fall back: also try listenToMyHotels in case this account
+            // somehow owns a hotel.
+            listenToMyHotels();
           }
         } else {
           await logout();
@@ -161,11 +221,38 @@ class HotelProvider extends ChangeNotifier {
 
       if (input.contains('@')) {
         try {
+          // Sign out any stale Firebase Auth session before signing in.
+          // This prevents a previous account's cached data from leaking into
+          // the new session when the provider is re-used across logins.
+          try { await _auth.signOut(); } catch (_) {}
+
           UserCredential cred = await _auth.signInWithEmailAndPassword(
               email: input, password: password);
-          // Firebase Auth succeeded — this is definitely a Director/Firebase account.
-          // Load user data separately with its own error handling.
-          await _fetchUserData(cred.user!.uid);
+          // Firebase Auth succeeded — this is a Director or a Firebase-Auth
+          // sub-director / supervisor account.
+          // IMPORTANT: Always resolve the highest-ranked document by email
+          // BEFORE loading any user data.  Loading by UID first risks picking
+          // up an old "Staff" document (created before the account was promoted)
+          // that has appAccess='stayfix_job', which triggers an immediate logout.
+          //
+          // Strategy:
+          //   1. Query all docs with this email, pick the best-ranked one.
+          //   2. If the query succeeds, load that doc.
+          //   3. Only fall back to UID-based loading if the query fails entirely.
+          String resolvedDocId = cred.user!.uid;
+          try {
+            final emailQuery = await _firestore
+                .collection('users')
+                .where('email', isEqualTo: input.trim())
+                .get();
+            if (emailQuery.docs.isNotEmpty) {
+              resolvedDocId = _pickBestUserDoc(emailQuery.docs).id;
+            }
+          } catch (_) {
+            // Email query failed — fall back to UID doc.
+          }
+          await _fetchUserData(resolvedDocId);
+
           if (PropertyScopeService.isStayFixJobOnly(
                   AppSessionService.currentUserData) ||
               PropertyScopeService.isDisabled(
@@ -173,9 +260,35 @@ class HotelProvider extends ChangeNotifier {
             await logout();
             return false;
           }
+
+          // If still no user doc found, auth succeeded but there is no profile.
+          if (_currentUser == null) {
+            await _auth.signOut();
+            return false;
+          }
+
           final isDir = _currentUser?.role == UserRoles.director;
+          // Always save using the Firebase Auth UID so tryAutoLogin can
+          // cross-validate the Firebase Auth session on next cold start.
           await _saveSession(cred.user!.uid, isDirector: isDir);
-          listenToMyHotels();
+
+          if (isDir) {
+            // Director Général: hotels are indexed by ownerId.
+            listenToMyHotels();
+          } else {
+            // Sub-directors (Dir. Maintenance / Gouvernante / Réception) and
+            // supervisors created via addStaffMember have a hotelId field that
+            // points directly to the hotel they belong to.
+            final hotelId = _currentUser?.hotelId;
+            if (hotelId != null && hotelId.isNotEmpty) {
+              await _fetchHotelById(hotelId);
+              listenToHotelData();
+            } else {
+              // Fallback: try the ownerId index in case this account also owns
+              // a hotel (e.g. legacy setups).
+              listenToMyHotels();
+            }
+          }
           return true;
         } on FirebaseAuthException catch (_) {
           // Firebase Auth failed (wrong password, user not found) — try staff login.
@@ -201,15 +314,18 @@ class HotelProvider extends ChangeNotifier {
       required String value,
       required String password}) async {
     try {
+      // Fetch ALL docs matching this credential pair (email or username +
+      // password) and pick the one with the most privileged role. This prevents
+      // loading an old plain-Staff doc when the user has been promoted and a
+      // newer Director/sub-director doc with the same email also exists.
       final snapshot = await _firestore
           .collection('users')
           .where(field, isEqualTo: value)
           .where('password', isEqualTo: password)
-          .limit(1)
           .get();
 
       if (snapshot.docs.isNotEmpty) {
-        final doc = snapshot.docs.first;
+        final doc = _pickBestUserDoc(snapshot.docs);
         await _fetchUserData(doc.id);
         if (PropertyScopeService.isStayFixJobOnly(
                 AppSessionService.currentUserData) ||
@@ -230,6 +346,31 @@ class HotelProvider extends ChangeNotifier {
       debugPrint("Staff Login Error: $e");
     }
     return false;
+  }
+
+  /// Picks the Firestore document with the most privileged role from a list.
+  /// Prevents loading an old plain-Staff doc when a Director or sub-director
+  /// doc with the same email/username also exists in Firestore.
+  QueryDocumentSnapshot<Map<String, dynamic>> _pickBestUserDoc(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    const roleRank = {
+      UserRoles.director: 6,
+      UserRoles.maintenanceManager: 5,
+      UserRoles.housekeepingManager: 5,
+      UserRoles.receptionManager: 5,
+      UserRoles.supervisor: 4,
+      UserRoles.houseman: 3,
+      UserRoles.housekeeping: 2,
+      UserRoles.staff: 1,
+    };
+
+    return docs.reduce((best, doc) {
+      final bestRole = (best.data()['role'] as String?) ?? '';
+      final docRole = (doc.data()['role'] as String?) ?? '';
+      final bestRank = roleRank[bestRole] ?? 0;
+      final docRank = roleRank[docRole] ?? 0;
+      return docRank > bestRank ? doc : best;
+    });
   }
 
   Future<void> _saveSession(String userId, {bool isDirector = false}) async {
@@ -526,8 +667,10 @@ class HotelProvider extends ChangeNotifier {
 
   Future<void> _fetchUserData(String uid) async {
     try {
-      DocumentSnapshot doc =
-          await _firestore.collection('users').doc(uid).get();
+      DocumentSnapshot doc = await _firestore
+          .collection('users')
+          .doc(uid)
+          .get();
       if (doc.exists) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
         AppSessionService.setCurrentUser(userId: doc.id, data: data);
@@ -624,38 +767,84 @@ class HotelProvider extends ChangeNotifier {
 
       final DocumentSnapshot doc =
           await _firestore.collection('users').doc(user.uid).get();
-      final bool createdAccount =
-          userCredential.additionalUserInfo?.isNewUser == true || !doc.exists;
+      final bool uidProfileExists = doc.exists;
+      bool createdAccount =
+          userCredential.additionalUserInfo?.isNewUser == true ||
+              !uidProfileExists;
 
-      if (createdAccount) {
-        final String displayName = user.displayName ?? '';
-        final List<String> names = displayName.split(' ');
-        final String fName = names.isNotEmpty ? names.first : '';
-        final String lName = names.length > 1 ? names.last : '';
+      if (!uidProfileExists) {
+        // The Google Auth UID has no Firestore profile yet.
+        // Check if a profile was pre-created for this email (e.g. via
+        // addStaffMember which used the email/password UID).
+        final emailQuery = await _firestore
+            .collection('users')
+            .where('email', isEqualTo: user.email)
+            .limit(1)
+            .get();
 
-        await _firestore.collection('users').doc(user.uid).set({
-          'firstName': fName,
-          'lastName': lName,
-          'username': user.email?.split('@')[0] ?? '',
-          'email': user.email ?? '',
-          'role': UserRoles.director,
-          'phone': '',
-          'termsAccepted': false,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
+        if (emailQuery.docs.isNotEmpty) {
+          // Existing sub-director / supervisor linking Google for the first time.
+          // Migrate the profile to the new Google Auth UID.
+          final existingDoc = emailQuery.docs.first;
+          final existingData = existingDoc.data();
+          final migBatch = _firestore.batch();
+          migBatch.set(
+            _firestore.collection('users').doc(user.uid),
+            {
+              ...existingData,
+              'uid': user.uid,
+              'email': user.email ?? existingData['email'],
+              'googleLinkedAt': FieldValue.serverTimestamp(),
+            },
+          );
+          if (existingDoc.id != user.uid) {
+            migBatch.delete(
+                _firestore.collection('users').doc(existingDoc.id));
+          }
+          await migBatch.commit();
+          createdAccount = false; // Existing profile, not a brand-new account.
+        } else {
+          // Truly new account — create Director profile as usual.
+          final String displayName = user.displayName ?? '';
+          final List<String> names = displayName.split(' ');
+          final String fName = names.isNotEmpty ? names.first : '';
+          final String lName = names.length > 1 ? names.last : '';
+          await _firestore.collection('users').doc(user.uid).set({
+            'firstName': fName,
+            'lastName': lName,
+            'username': user.email?.split('@')[0] ?? '',
+            'email': user.email ?? '',
+            'role': UserRoles.director,
+            'phone': '',
+            'termsAccepted': false,
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+        }
       }
 
       _setLastAuthCreatedAccount(createdAccount);
       await _fetchUserData(user.uid);
       final isDir = _currentUser?.role == UserRoles.director;
       await _saveSession(user.uid, isDirector: isDir);
-      
+
       if (createdAccount) {
         // skipRooms=true: avoid the 469-document batch write at sign-up time.
         await createHotel('Mon Hôtel', 'N/A', skipRooms: true);
       }
-      
-      listenToMyHotels();
+
+      // Director Général: hotels are indexed by ownerId.
+      // Sub-directors / supervisors: hotel is referenced directly via hotelId.
+      if (isDir || createdAccount) {
+        listenToMyHotels();
+      } else {
+        final subHotelId = _currentUser?.hotelId;
+        if (subHotelId != null && subHotelId.isNotEmpty) {
+          await _fetchHotelById(subHotelId);
+          listenToHotelData();
+        } else {
+          listenToMyHotels();
+        }
+      }
       return true;
     } on PlatformException catch (e) {
       _setAuthError(_googlePlatformErrorMessage(e));
@@ -704,8 +893,20 @@ class HotelProvider extends ChangeNotifier {
         // skipRooms=true: avoid the 469-document batch write at sign-up time.
         await createHotel('Mon Hôtel', 'N/A', skipRooms: true);
       }
-      
-      listenToMyHotels();
+
+      // Director Général: hotels are indexed by ownerId.
+      // Sub-directors / supervisors: hotel is referenced directly via hotelId.
+      if (isDir || createdAccount) {
+        listenToMyHotels();
+      } else {
+        final subHotelId = _currentUser?.hotelId;
+        if (subHotelId != null && subHotelId.isNotEmpty) {
+          await _fetchHotelById(subHotelId);
+          listenToHotelData();
+        } else {
+          listenToMyHotels();
+        }
+      }
       return true;
     } on FirebaseAuthException catch (e) {
       _setAuthError(_appleFirebaseErrorMessage(e));
@@ -804,14 +1005,22 @@ class HotelProvider extends ChangeNotifier {
       _currentUser = newDirector;
       _setLastAuthCreatedAccount(true);
       AppSessionService.setCurrentUser(userId: cred.user!.uid, data: userData);
-      await _saveSession(cred.user!.uid);
-      
+      // Save session as director so tryAutoLogin verifies Firebase Auth on next
+      // launch and correctly loads the hotel (which populates _currentUser.hotelId).
+      await _saveSession(cred.user!.uid, isDirector: true);
+
       // Automatically create a hotel for the new director.
       // skipRooms=true avoids writing 469 Firestore documents during sign-up,
       // which was the main cause of the long registration time.
       await createHotel('Mon Hôtel', 'N/A', skipRooms: true);
+
+      // Re-fetch user data so _currentUser.hotelId is populated (createHotel
+      // writes hotelId to Firestore) before we notify listeners. Without this
+      // the OrderHubScreen sees hotel==null and never starts the order streams.
+      await _fetchUserData(cred.user!.uid);
+
       listenToMyHotels();
-      
+
       notifyListeners();
       return true;
     } catch (e) {
@@ -843,7 +1052,7 @@ class HotelProvider extends ChangeNotifier {
       'email': email,
       'phone': phone,
       'username': username,
-      'password': password, // Still save it for staff-login fallback if needed
+      'password': password, // Stored for Firestore-password staff-login fallback
       'role': role,
       'hotelId': hotelId,
       'addedBy': _currentUser?.id,
@@ -851,27 +1060,38 @@ class HotelProvider extends ChangeNotifier {
       'createdAt': FieldValue.serverTimestamp(),
     };
 
+    // Use a secondary Firebase app to create the Firebase Auth account
+    // without signing out the currently logged-in manager.
+    FirebaseApp? secondaryApp;
     try {
-      // Use a secondary Firebase app to create the auth account 
-      // so it doesn't log out the currently signed-in manager.
-      FirebaseApp secondaryApp = await Firebase.initializeApp(
-        name: 'SecondaryApp_${DateTime.now().millisecondsSinceEpoch}',
-        options: Firebase.app().options,
+      secondaryApp = await Firebase.initializeApp(
+        name: 'StaffAccount_${DateTime.now().millisecondsSinceEpoch}',
+        options: DefaultFirebaseOptions.currentPlatform,
       );
-      
-      UserCredential userCred = await FirebaseAuth.instanceFor(app: secondaryApp)
+
+      final secondaryAuth = FirebaseAuth.instanceFor(app: secondaryApp);
+      UserCredential userCred = await secondaryAuth
           .createUserWithEmailAndPassword(email: email, password: password);
-          
-      String uid = userCred.user!.uid;
+
+      final String uid = userCred.user!.uid;
+
+      // Write the Firestore user document keyed to the Firebase Auth UID so
+      // the account can be fetched by uid on login.
       await _firestore.collection('users').doc(uid).set(userData);
-      
-      await secondaryApp.delete();
+
+      // Sign out the secondary auth session so it doesn't linger.
+      await secondaryAuth.signOut();
     } catch (e) {
-      debugPrint("Error creating auth account for staff: $e");
-      // Fallback if secondary app creation fails for some reason
-      await _firestore.collection('users').add(userData);
+      debugPrint('addStaffMember: error creating Firebase Auth account — $e');
+      // Re-throw so the caller (AddStaffScreen) can inform the user that the
+      // account could not be created, instead of silently storing a broken
+      // Firestore-only document that can never log in.
+      rethrow;
+    } finally {
+      // Always clean up the secondary Firebase app instance.
+      await secondaryApp?.delete();
     }
-    
+
     fetchHotelStaff();
   }
 
@@ -1089,8 +1309,7 @@ class HotelProvider extends ChangeNotifier {
   }) async {
     final userRef = _firestore.collection('users').doc(user.uid);
     final doc = await userRef.get();
-    final createdAccount =
-        userCredential.additionalUserInfo?.isNewUser == true || !doc.exists;
+    final bool uidProfileExists = doc.exists;
     final fullName = (userCredential.user?.displayName ?? '').trim();
     final firstName = appleSignIn.firstName.isNotEmpty
         ? appleSignIn.firstName
@@ -1100,22 +1319,65 @@ class HotelProvider extends ChangeNotifier {
         : _extractLastName(fullName);
     final resolvedEmail = (user.email ?? appleSignIn.email).trim();
 
-    if (createdAccount) {
-      await userRef.set({
-        'firstName': firstName,
-        'lastName': lastName,
-        'username': resolvedEmail.isNotEmpty
-            ? resolvedEmail.split('@')[0]
-            : 'stayfix_user',
-        'email': resolvedEmail,
-        'role': UserRoles.director,
-        'phone': '',
-        'termsAccepted': false,
-        'createdAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      return true;
+    if (!uidProfileExists) {
+      // No profile at this Apple Auth UID yet.
+      // Check if a profile already exists for this email (pre-created via
+      // addStaffMember using the email/password UID).
+      final emailToQuery = resolvedEmail.isNotEmpty
+          ? resolvedEmail
+          : appleSignIn.email;
+      QuerySnapshot? emailQuery;
+      if (emailToQuery.isNotEmpty) {
+        emailQuery = await _firestore
+            .collection('users')
+            .where('email', isEqualTo: emailToQuery)
+            .limit(1)
+            .get();
+      }
+
+      if (emailQuery != null && emailQuery.docs.isNotEmpty) {
+        // Existing sub-director / supervisor linking Apple for the first time.
+        // Migrate the profile to the new Apple Auth UID.
+        final existingDoc = emailQuery.docs.first;
+        final existingData =
+            existingDoc.data() as Map<String, dynamic>;
+        final migBatch = _firestore.batch();
+        migBatch.set(
+          userRef,
+          {
+            ...existingData,
+            'uid': user.uid,
+            'email': resolvedEmail.isNotEmpty
+                ? resolvedEmail
+                : existingData['email'],
+            'appleLinkedAt': FieldValue.serverTimestamp(),
+          },
+        );
+        if (existingDoc.id != user.uid) {
+          migBatch.delete(
+              _firestore.collection('users').doc(existingDoc.id));
+        }
+        await migBatch.commit();
+        return false; // Existing profile, not a brand-new account.
+      } else {
+        // Truly new account — create Director profile.
+        await userRef.set({
+          'firstName': firstName,
+          'lastName': lastName,
+          'username': resolvedEmail.isNotEmpty
+              ? resolvedEmail.split('@')[0]
+              : 'stayfix_user',
+          'email': resolvedEmail,
+          'role': UserRoles.director,
+          'phone': '',
+          'termsAccepted': false,
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+        return true;
+      }
     }
 
+    // Profile already exists at this UID — update any missing fields.
     final existingData = doc.data() ?? const <String, dynamic>{};
     final updates = <String, dynamic>{};
     if ((existingData['firstName'] as String? ?? '').trim().isEmpty &&

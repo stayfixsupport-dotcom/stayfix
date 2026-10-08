@@ -19,6 +19,8 @@ class HotelUser {
   final String phone;
   final String? hotelId;
 
+  String get fullName => '$firstName $lastName'.trim();
+
   HotelUser({
     required this.id,
     required this.email,
@@ -29,8 +31,6 @@ class HotelUser {
     required this.phone,
     this.hotelId,
   });
-
-  String get fullName => "$firstName $lastName";
 }
 
 class Hotel {

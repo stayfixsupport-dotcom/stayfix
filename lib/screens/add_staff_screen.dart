@@ -33,7 +33,6 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
   final _lastNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
-  final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
 
   bool _isLoading = false;
@@ -67,13 +66,12 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
   }
 
   bool get _isWorkerRole {
-    final isDirectorCreatingSubManager =
-        widget.currentUserRole == UserRoles.director &&
-            !widget.isAddingSupervisorMode &&
-            (_selectedRole == UserRoles.maintenanceManager ||
-                _selectedRole == UserRoles.housekeepingManager ||
-                _selectedRole == UserRoles.receptionManager);
-    return !isDirectorCreatingSubManager;
+    // Only true field workers use the Stayfix Job app.
+    // Supervisors, sub-directors and managers all use the main Stayfix app
+    // and must NOT be tagged with appAccess='stayfix_job' (that blocks their login).
+    return _selectedRole == UserRoles.houseman ||
+        _selectedRole == UserRoles.housekeeping ||
+        _selectedRole == UserRoles.staff;
   }
 
   String get _targetAppName => _isWorkerRole ? "Stayfix Job" : "Stayfix";
@@ -136,16 +134,17 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
 
 
   void _submit() async {
-    final bool requiresUsername = _isWorkerRole && 
-                                  _selectedRole != UserRoles.supervisor && 
-                                  !widget.isAddingSupervisorMode;
-
     if (_selectedRole == null ||
         _firstNameController.text.trim().isEmpty ||
-        (requiresUsername && _usernameController.text.trim().isEmpty) ||
         _passwordController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text("Veuillez remplir tous les champs obligatoires"),
+          backgroundColor: Colors.redAccent));
+      return;
+    }
+    if (_passwordController.text.trim().length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Le mot de passe doit contenir au moins 6 caractères"),
           backgroundColor: Colors.redAccent));
       return;
     }
@@ -176,14 +175,17 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
     if (widget.isAddingSupervisorMode && _selectedManagerId != null) {
       final manager =
           provider.hotelStaff.firstWhere((u) => u.id == _selectedManagerId);
-      String cleanManagerRole = manager.role.replaceAll('Dir. ', '');
+      String cleanManagerRole = manager.role.replaceAll('Directeur ', '');
+      finalRole = "Superviseur ($cleanManagerRole)";
+    } else if (finalRole == UserRoles.supervisor && widget.currentUserRole != null && widget.currentUserRole != UserRoles.director) {
+      String cleanManagerRole = widget.currentUserRole!.replaceAll('Directeur ', '');
       finalRole = "Superviseur ($cleanManagerRole)";
     }
 
     final String firstName = _firstNameController.text.trim();
     final String lastName = _lastNameController.text.trim();
     final String phone = _phoneController.text.trim();
-    final String username = _usernameController.text.trim();
+    final String username = email.split('@')[0];
     final String password = _passwordController.text.trim();
     final String fullName = "$firstName $lastName".trim();
     final String hotelName = provider.currentHotelName;
@@ -191,16 +193,29 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
     // Determine target app and download link
     final bool isWorker = _isWorkerRole;
 
-    await provider.addStaffMember(
-      firstName: firstName,
-      lastName: lastName,
-      email: email,
-      phone: phone,
-      username: username,
-      password: password,
-      role: finalRole,
-      appAccess: isWorker ? 'stayfix_job' : null,
-    );
+    try {
+      await provider.addStaffMember(
+        firstName: firstName,
+        lastName: lastName,
+        email: email,
+        phone: phone,
+        username: username,
+        password: password,
+        role: finalRole,
+        appAccess: isWorker ? 'stayfix_job' : null,
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+            "Erreur lors de la création du compte : $e",
+          ),
+          backgroundColor: Colors.redAccent,
+        ));
+      }
+      return;
+    }
 
     final String appName = isWorker ? "Stayfix Job" : "Stayfix";
     final String appLinkAndroid = isWorker
@@ -347,11 +362,6 @@ class _AddStaffScreenState extends State<AddStaffScreen> {
                     letterSpacing: 1,
                     fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            if (_isWorkerRole && 
-                _selectedRole != UserRoles.supervisor && 
-                !widget.isAddingSupervisorMode)
-              _buildInput(
-                  "Nom d'utilisateur", _usernameController, LucideIcons.atSign),
             _buildInput("Mot de passe", _passwordController, LucideIcons.lock,
                 isPassword: true),
 

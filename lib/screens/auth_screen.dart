@@ -310,7 +310,7 @@ class _AuthScreenState extends State<AuthScreen> {
   void _navigateToNextScreen() {
     final provider = Provider.of<HotelProvider>(context, listen: false);
     final user = provider.currentUser;
-    if (user != null && user.role == UserRoles.director) {
+    if (user != null && provider.isDirector) {
       resolveManagerDestination().then((nextScreen) {
         if (!mounted) return;
         Navigator.pushReplacement(

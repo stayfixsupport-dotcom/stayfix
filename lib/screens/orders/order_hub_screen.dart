@@ -55,17 +55,23 @@ class _OrderHubScreenState extends State<OrderHubScreen> {
   /// Maps a user role to its fixed department ID.
   static String _deptIdForRole(String role) {
     if (role == UserRoles.maintenanceManager ||
-        role == UserRoles.supervisor) {
+        (role.startsWith(UserRoles.supervisor) && role.contains('Maintenance'))) {
       return 'dept_maintenance';
     }
     if (role == UserRoles.housekeepingManager ||
         role == UserRoles.housekeeping ||
-        role == UserRoles.houseman) {
+        role == UserRoles.houseman ||
+        (role.startsWith(UserRoles.supervisor) && role.contains('Gouvernante'))) {
       return 'dept_housekeeping';
     }
     if (role == UserRoles.receptionManager ||
-        role == UserRoles.staff) {
+        role == UserRoles.staff ||
+        (role.startsWith(UserRoles.supervisor) && role.contains('Réception'))) {
       return 'dept_reception';
+    }
+    // Fallback if it's just 'Superviseur' without a suffix (though usually they are assigned via UI)
+    if (role == UserRoles.supervisor) {
+      return 'dept_maintenance';
     }
     return ''; // director or unknown → empty (all-orders stream)
   }
@@ -83,18 +89,24 @@ class _OrderHubScreenState extends State<OrderHubScreen> {
     // Wait until both are available.
     if (user == null || hotel == null) return;
 
-    final isDirector = hotelProvider.isDirector;
-    final deptId = isDirector ? '' : _deptIdForRole(user.role);
+    // Directeur Général sees ALL orders (isDirector=true, no deptId).
+    // Department directors (Gouvernante/Maintenance/Réception) see only
+    // their dept's orders (isDirector=false, deptId set).
+    final isGeneralDirector = user.role == UserRoles.director;
+    final deptId = isGeneralDirector ? '' : _deptIdForRole(user.role);
+    final isDirectorFlag = isGeneralDirector; // dept directors use deptId scope
 
     // Deduplicate: skip if nothing changed.
-    final initKey = '${hotel.id}|$deptId|$isDirector';
+    final initKey = '${hotel.id}|$deptId|$isDirectorFlag';
     if (initKey == _lastInitKey) return;
     _lastInitKey = initKey;
 
     orderProvider.init(
       hotelId: hotel.id,
       deptId: deptId,
-      isDirector: isDirector,
+      isDirector: isDirectorFlag,
+      userId: user.id,
+      userRole: user.role,
     );
   }
 
@@ -111,6 +123,7 @@ class _OrderHubScreenState extends State<OrderHubScreen> {
 
     return Consumer<OrderProvider>(
       builder: (context, orderProvider, _) {
+        final hotelProvider = Provider.of<HotelProvider>(context, listen: false);
         final List<_TabItem> currentTabs = [
           const _TabItem(icon: LucideIcons.home, label: 'Accueil'),
           const _TabItem(icon: LucideIcons.messageSquare, label: 'Chat'),
@@ -169,7 +182,7 @@ class _OrderHubScreenState extends State<OrderHubScreen> {
           body: Column(
             children: [
               if ((orderProvider.currentDeptId?.isEmpty ?? true) &&
-                  !_isDirector &&
+                  !hotelProvider.isDirector &&
                   _tab > 0)
                 _deptWarningBanner(isDark),
               Expanded(child: pages[_tab]),

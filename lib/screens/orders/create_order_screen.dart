@@ -3,9 +3,12 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import '../../core/theme.dart';
+import '../../models/hotel_models.dart';
 import '../../models/order_models.dart';
 import '../../providers/hotel_provider.dart';
 import '../../providers/order_provider.dart';
+import '../add_staff_screen.dart';
+import '../team_list_screen.dart';
 
 class CreateOrderScreen extends StatefulWidget {
   const CreateOrderScreen({super.key});
@@ -21,11 +24,14 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
   final _locationDetailCtrl = TextEditingController();
 
   OrgCategory? _selectedCategory;
-  OrgDepartment? _selectedDept;
+  OrgDepartment? _selectedDept; // kept for self-order dept fallback
+  /// IDs of selected recipient users (multi-select).
+  final Set<String> _selectedUserIds = {};
   OrderLocationType _locationType = OrderLocationType.room;
 
   String? _selectedOtherLocation;
   bool _isSubmitting = false;
+  bool _isForSelf = false; // "Pour moi-même" mode
   int _descLen = 0;
 
   static const _kOtherLocations = [
@@ -65,8 +71,9 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
       _showError('Veuillez sélectionner une catégorie.');
       return;
     }
-    if (_selectedDept == null) {
-      _showError('Veuillez sélectionner un département destinataire.');
+    // Only require a recipient when NOT in "Pour moi-même" mode
+    if (!_isForSelf && _selectedUserIds.isEmpty) {
+      _showError('Veuillez sélectionner au moins un destinataire.');
       return;
     }
     if (_locationType == OrderLocationType.room && _roomCtrl.text.trim().isEmpty) {
@@ -90,6 +97,31 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
             .firstOrNull ??
         user.role;
 
+    // Build recipient info from selected users
+    final orderProvider2 = Provider.of<OrderProvider>(context, listen: false);
+    final allDirectorUsers = orderProvider2.directorUsers;
+
+    final String destDeptId;
+    final String destDeptName;
+    final List<String> assignedUserIds;
+    final List<String> assignedUserNames;
+
+    if (_isForSelf) {
+      destDeptId = creatorDeptId;
+      destDeptName = creatorDeptName;
+      assignedUserIds = [user.id];
+      assignedUserNames = [user.fullName];
+    } else {
+      final selectedUsers = allDirectorUsers
+          .where((u) => _selectedUserIds.contains(u['id']));
+      assignedUserIds = selectedUsers.map((u) => u['id'] ?? '').toList();
+      assignedUserNames = selectedUsers.map((u) => u['fullName'] ?? '').toList();
+      // deptId: use the first selected user's deptId (for inbox routing)
+      final firstUser = selectedUsers.isNotEmpty ? selectedUsers.first : null;
+      destDeptId = firstUser?['deptId'] ?? '';
+      destDeptName = firstUser?['role'] ?? '';
+    }
+
     final orderId = await orderProvider.createOrder(
       creatorId: user.id,
       creatorName: user.fullName,
@@ -105,8 +137,11 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
               ? _locationDetailCtrl.text.trim()
               : _selectedOtherLocation)
           : null,
-      destDeptId: _selectedDept!.id,
-      destDeptName: _selectedDept!.name,
+      destDeptId: destDeptId,
+      destDeptName: destDeptName,
+      assignedUserIds: assignedUserIds,
+      assignedUserNames: assignedUserNames,
+      isForSelf: _isForSelf,
     );
 
     setState(() => _isSubmitting = false);
@@ -153,10 +188,12 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
     final textMuted = isDark ? SfColors.darkTextMuted : SfColors.lightTextMuted;
     final border = isDark ? SfColors.darkBorder : SfColors.lightBorder;
 
-    return Consumer<OrderProvider>(
-      builder: (context, orderProvider, _) {
+    return Consumer2<OrderProvider, HotelProvider>(
+      builder: (context, orderProvider, hotelProvider2, _) {
         final categories = orderProvider.categories;
-        final departments = orderProvider.departments;
+        final directorUsers = orderProvider.directorUsers;
+        final isDirector = orderProvider.isDirector;
+        final currentUserRole = hotelProvider2.currentUser?.role ?? '';
 
         return Scaffold(
           backgroundColor: bg,
@@ -186,7 +223,7 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                 step2Done: _locationType == OrderLocationType.room
                     ? _roomCtrl.text.trim().isNotEmpty
                     : _selectedOtherLocation != null,
-                step3Done: _selectedDept != null,
+                step3Done: _isForSelf || _selectedDept != null,
               ),
               const SizedBox(height: 4),
 
@@ -368,41 +405,322 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
 
                       const SizedBox(height: 12),
 
-                      // ── DÉPARTEMENT DESTINATAIRE ───────────────────────
+                      // ── DESTINATION ────────────────────────────────────
                       _SectionCard(
                         icon: LucideIcons.building2,
-                        title: 'DÉPARTEMENT DESTINATAIRE',
+                        title: 'DESTINATION',
                         cardBg: cardBg,
                         border: border,
                         children: [
-                          _FieldRow(
-                            icon: LucideIcons.users,
-                            label: 'Envoyer à',
-                            textMuted: textMuted,
+                          // ── Mode toggle: Pour moi-même / Envoyer à ──────
+                          // "Pour moi-même" is hidden for the Directeur Général
+                          if (!isDirector) Row(
+                            children: [
+                              Expanded(
+                                child: _destinationModeToggle(
+                                  label: 'Pour moi-même',
+                                  icon: LucideIcons.user,
+                                  selected: _isForSelf,
+                                  onTap: () => setState(() {
+                                    _isForSelf = true;
+                                    _selectedDept = null;
+                                  }),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _destinationModeToggle(
+                                  label: 'Envoyer à',
+                                  icon: LucideIcons.send,
+                                  selected: !_isForSelf,
+                                  onTap: () => setState(() => _isForSelf = false),
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 8),
-                          DropdownButtonFormField<OrgDepartment>(
-                            value: _selectedDept,
-                            decoration: _inputDecoration('Sélectionner un département', isDark),
-                            dropdownColor: isDark ? SfColors.darkBgSurface : SfColors.lightBgSurface,
-                            icon: Icon(LucideIcons.chevronDown, size: 18, color: textMuted),
-                            style: GoogleFonts.inter(color: textPrimary, fontSize: 14),
-                            items: departments
-                                .map((d) => DropdownMenuItem(
-                                      value: d,
-                                      child: Row(
-                                        children: [
-                                          const Icon(LucideIcons.building2,
-                                              size: 14, color: SfColors.gold),
-                                          const SizedBox(width: 8),
-                                          Text(d.name),
-                                        ],
+
+                          // ── Self-order info banner ──────────────────────
+                          if (_isForSelf) ...[
+                            const SizedBox(height: 14),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 12),
+                              decoration: BoxDecoration(
+                                color: SfColors.gold.withOpacity(0.10),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                    color: SfColors.gold.withOpacity(0.35),
+                                    width: 1),
+                              ),
+                              child: Consumer<HotelProvider>(
+                                builder: (context, hotelProvider, _) {
+                                  final user = hotelProvider.currentUser;
+                                  final name = user?.fullName ?? 'Vous';
+                                  return Row(
+                                    children: [
+                                      CircleAvatar(
+                                        radius: 18,
+                                        backgroundColor:
+                                            SfColors.gold.withOpacity(0.20),
+                                        child: Icon(
+                                          LucideIcons.user,
+                                          size: 18,
+                                          color: SfColors.gold,
+                                        ),
                                       ),
-                                    ))
-                                .toList(),
-                            onChanged: (v) => setState(() => _selectedDept = v),
-                            validator: (v) => v == null ? 'Requis' : null,
-                          ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              name,
+                                              style: GoogleFonts.inter(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w700,
+                                                color: SfColors.gold,
+                                              ),
+                                            ),
+                                            Text(
+                                              'L\'ordre sera créé pour vous-même',
+                                              style: GoogleFonts.inter(
+                                                fontSize: 12,
+                                                color: SfColors.gold
+                                                    .withOpacity(0.75),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      Container(
+                                        width: 20,
+                                        height: 20,
+                                        decoration: const BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: SfColors.gold,
+                                        ),
+                                        child: const Icon(
+                                          LucideIcons.check,
+                                          size: 12,
+                                          color: Colors.black,
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
+                          ] else ...[
+                            // ── Recipient (person) carousel ────────────────
+                            const SizedBox(height: 14),
+                            _FieldRow(
+                              icon: LucideIcons.users,
+                              label: 'Destinataire(s)',
+                              textMuted: textMuted,
+                            ),
+                            if (_selectedUserIds.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 6, bottom: 2),
+                                child: Text(
+                                  '${_selectedUserIds.length} personne(s) sélectionnée(s)',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 12,
+                                    color: SfColors.gold,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            const SizedBox(height: 10),
+                            LayoutBuilder(
+                              builder: (context, constraints) {
+                                final cardWidth =
+                                    (constraints.maxWidth - 10 - 20) / 1.5;
+                                return SizedBox(
+                                  height: 68,
+                                  child: ScrollConfiguration(
+                                    behavior: ScrollConfiguration.of(context)
+                                        .copyWith(scrollbars: false),
+                                    child: ListView.separated(
+                                      scrollDirection: Axis.horizontal,
+                                      physics: const BouncingScrollPhysics(),
+                                      clipBehavior: Clip.hardEdge,
+                                      padding: EdgeInsets.zero,
+                                      itemCount: directorUsers.isEmpty
+                                          ? 1
+                                          : directorUsers.length,
+                                      separatorBuilder: (_, __) =>
+                                          const SizedBox(width: 10),
+                                      itemBuilder: (context, index) {
+                                        if (directorUsers.isEmpty) {
+                                          return GestureDetector(
+                                            onTap: () => Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (_) => isDirector
+                                                    ? const TeamListScreen()
+                                                    : AddStaffScreen(currentUserRole: currentUserRole),
+                                              ),
+                                            ),
+                                            child: Container(
+                                              width: constraints.maxWidth,
+                                              alignment: Alignment.center,
+                                              decoration: BoxDecoration(
+                                                borderRadius: BorderRadius.circular(14),
+                                                border: Border.all(color: SfColors.gold.withOpacity(0.5)),
+                                                color: SfColors.gold.withOpacity(0.08),
+                                              ),
+                                              child: Row(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  Icon(LucideIcons.userPlus, color: SfColors.gold, size: 16),
+                                                  const SizedBox(width: 8),
+                                                  Text(
+                                                    'Ajouter des membres',
+                                                    style: GoogleFonts.inter(
+                                                      color: SfColors.gold,
+                                                      fontSize: 13,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        final u = directorUsers[index];
+                                        final uid = u['id'] ?? '';
+                                        final fullName = u['fullName'] ?? uid;
+                                        final roleName = u['role'] ?? '';
+                                        final isSelected =
+                                            _selectedUserIds.contains(uid);
+                                        return GestureDetector(
+                                          onTap: () => setState(() {
+                                            if (isSelected) {
+                                              _selectedUserIds.remove(uid);
+                                            } else {
+                                              _selectedUserIds.add(uid);
+                                            }
+                                          }),
+                                          child: AnimatedContainer(
+                                            duration: const Duration(
+                                                milliseconds: 200),
+                                            width: cardWidth,
+                                            height: 68,
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 12, vertical: 8),
+                                            decoration: BoxDecoration(
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                              border: Border.all(
+                                                color: isSelected
+                                                    ? SfColors.gold
+                                                    : border,
+                                                width: isSelected ? 1.5 : 1,
+                                              ),
+                                              color: isSelected
+                                                  ? SfColors.gold
+                                                      .withOpacity(0.12)
+                                                  : isDark
+                                                      ? const Color(0xFF1C1C1F)
+                                                      : const Color(0xFFF4F4F5),
+                                              boxShadow: isSelected
+                                                  ? [
+                                                      BoxShadow(
+                                                        color: SfColors.gold
+                                                            .withOpacity(0.18),
+                                                        blurRadius: 10,
+                                                        offset:
+                                                            const Offset(0, 3),
+                                                      ),
+                                                    ]
+                                                  : null,
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                CircleAvatar(
+                                                  radius: 18,
+                                                  backgroundColor: isSelected
+                                                      ? SfColors.gold
+                                                      : SfColors.gold
+                                                          .withOpacity(0.15),
+                                                  child: Icon(
+                                                    LucideIcons.user,
+                                                    color: isSelected
+                                                        ? Colors.black
+                                                        : (isDark
+                                                            ? SfColors.gold
+                                                            : SfColors.goldDark),
+                                                    size: 18,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 10),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment.start,
+                                                    mainAxisAlignment:
+                                                        MainAxisAlignment.center,
+                                                    children: [
+                                                      Text(
+                                                        fullName,
+                                                        maxLines: 1,
+                                                        overflow:
+                                                            TextOverflow.ellipsis,
+                                                        style: GoogleFonts.inter(
+                                                          color: isSelected
+                                                              ? SfColors.gold
+                                                              : textPrimary,
+                                                          fontSize: 14,
+                                                          fontWeight:
+                                                              FontWeight.w600,
+                                                        ),
+                                                      ),
+                                                      const SizedBox(height: 2),
+                                                      Text(
+                                                        roleName,
+                                                        maxLines: 1,
+                                                        overflow:
+                                                            TextOverflow.ellipsis,
+                                                        style: GoogleFonts.inter(
+                                                          color: isSelected
+                                                              ? SfColors.gold
+                                                                  .withOpacity(0.8)
+                                                              : textMuted,
+                                                          fontSize: 12,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                                if (isSelected) ...[
+                                                  const SizedBox(width: 6),
+                                                  Container(
+                                                    width: 16,
+                                                    height: 16,
+                                                    decoration: const BoxDecoration(
+                                                      shape: BoxShape.circle,
+                                                      color: SfColors.gold,
+                                                    ),
+                                                    child: const Icon(
+                                                      LucideIcons.check,
+                                                      size: 10,
+                                                      color: Colors.black,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ],
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                          // ── End destination section ──────────────────────
                         ],
                       ),
 
@@ -461,7 +779,9 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
                                 color: Colors.black.withOpacity(0.25),
                               ),
                               Text(
-                                'Envoyer l\'ordre',
+                                _isForSelf
+                                    ? 'Créer l\'ordre pour moi'
+                                    : 'Envoyer l\'ordre',
                                 style: GoogleFonts.inter(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w700,
@@ -477,6 +797,48 @@ class _CreateOrderScreenState extends State<CreateOrderScreen> {
           ),
         );
       },
+    );
+  }
+
+  // ── Destination mode toggle ──────────────────────────────────────────────────
+
+  Widget _destinationModeToggle({
+    required String label,
+    required IconData icon,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: selected ? SfColors.gold.withOpacity(0.12) : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? SfColors.gold : SfColors.darkBorder,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon,
+                size: 17,
+                color: selected ? SfColors.gold : SfColors.darkTextMuted),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: selected ? SfColors.gold : SfColors.darkTextMuted,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

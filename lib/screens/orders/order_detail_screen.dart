@@ -541,6 +541,43 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
       ),
       child: Column(
         children: [
+          // "Pour moi-même" banner when applicable
+          if (order.isForSelf) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: SfColors.gold.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: SfColors.gold.withOpacity(0.35), width: 1),
+              ),
+              child: Row(
+                children: [
+                  const Icon(LucideIcons.user,
+                      size: 14, color: SfColors.gold),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Pour moi-même',
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: SfColors.gold,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '· Ordre personnel',
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      color: SfColors.gold.withOpacity(0.7),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            _divider(border),
+          ],
           _infoRow(
               LucideIcons.tag,
               'Catégorie',
@@ -570,8 +607,14 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
           _infoRow(LucideIcons.building2, 'Département émetteur',
               order.creatorDeptName, SfColors.warning, textMuted, textPrimary),
           _divider(border),
-          _infoRow(LucideIcons.send, 'Département actuel',
-              order.currentDeptName, SfColors.gold, textMuted, textPrimary),
+          _infoRow(
+            LucideIcons.send,
+            order.isForSelf ? 'Destinataire' : 'Département actuel',
+            order.isForSelf ? order.creatorName : order.currentDeptName,
+            SfColors.gold,
+            textMuted,
+            textPrimary,
+          ),
           _divider(border),
           _infoRow(LucideIcons.calendar, 'Date de création',
               _formatFull(order.createdAt), SfColors.info, textMuted,
@@ -580,6 +623,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen>
       ),
     );
   }
+
 
   Widget _divider(Color color) =>
       Divider(height: 16, thickness: 0.5, color: color);

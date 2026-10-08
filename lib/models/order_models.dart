@@ -297,6 +297,8 @@ class OrgOrder {
   final String currentDeptName;
   final String initialDeptId;
   final String initialDeptName;
+  final List<String> assignedUserIds;
+  final List<String> assignedUserNames;
 
   // Status & timestamps
   final OrderStatus status;
@@ -305,6 +307,9 @@ class OrgOrder {
   final DateTime? completedAt;
   final String? completedById;
   final String? completedByName;
+
+  // Self-order flag ("Pour moi-même")
+  final bool isForSelf;
 
   // Routine-specific (null for regular orders)
   final bool isRoutine;
@@ -331,12 +336,15 @@ class OrgOrder {
     required this.currentDeptName,
     required this.initialDeptId,
     required this.initialDeptName,
+    this.assignedUserIds = const [],
+    this.assignedUserNames = const [],
     required this.status,
     required this.createdAt,
     this.seenAt,
     this.completedAt,
     this.completedById,
     this.completedByName,
+    this.isForSelf = false,
     this.isRoutine = false,
     this.routineTemplateId,
     this.routineDateString,
@@ -363,12 +371,15 @@ class OrgOrder {
       currentDeptName: (data['currentDeptName'] as String?) ?? '',
       initialDeptId: (data['initialDeptId'] as String?) ?? '',
       initialDeptName: (data['initialDeptName'] as String?) ?? '',
+      assignedUserIds: List<String>.from(data['assignedUserIds'] ?? []),
+      assignedUserNames: List<String>.from(data['assignedUserNames'] ?? []),
       status: OrderStatus.fromString(data['status'] as String?),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       seenAt: (data['seenAt'] as Timestamp?)?.toDate(),
       completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
       completedById: data['completedById'] as String?,
       completedByName: data['completedByName'] as String?,
+      isForSelf: (data['isForSelf'] as bool?) ?? false,
       isRoutine: (data['isRoutine'] as bool?) ?? false,
       routineTemplateId: data['routineTemplateId'] as String?,
       routineDateString: data['routineDateString'] as String?,
@@ -391,6 +402,8 @@ class OrgOrder {
         'currentDeptName': currentDeptName,
         'initialDeptId': initialDeptId,
         'initialDeptName': initialDeptName,
+        'assignedUserIds': assignedUserIds,
+        'assignedUserNames': assignedUserNames,
         'status': status.toFirestoreValue(),
         'createdAt': FieldValue.serverTimestamp(),
         if (seenAt != null) 'seenAt': Timestamp.fromDate(seenAt!),
@@ -398,6 +411,7 @@ class OrgOrder {
           'completedAt': Timestamp.fromDate(completedAt!),
         if (completedById != null) 'completedById': completedById,
         if (completedByName != null) 'completedByName': completedByName,
+        if (isForSelf) 'isForSelf': true,
         if (isRoutine) 'isRoutine': true,
         if (routineTemplateId != null) 'routineTemplateId': routineTemplateId,
         if (routineDateString != null) 'routineDateString': routineDateString,
@@ -416,6 +430,8 @@ class OrgOrder {
     String? categoryName,
     String? currentDeptId,
     String? currentDeptName,
+    List<String>? assignedUserIds,
+    List<String>? assignedUserNames,
     DateTime? seenAt,
     DateTime? completedAt,
     String? completedById,
@@ -439,12 +455,15 @@ class OrgOrder {
       currentDeptName: currentDeptName ?? this.currentDeptName,
       initialDeptId: initialDeptId,
       initialDeptName: initialDeptName,
+      assignedUserIds: assignedUserIds ?? this.assignedUserIds,
+      assignedUserNames: assignedUserNames ?? this.assignedUserNames,
       status: status ?? this.status,
       createdAt: createdAt,
       seenAt: seenAt ?? this.seenAt,
       completedAt: completedAt ?? this.completedAt,
       completedById: completedById ?? this.completedById,
       completedByName: completedByName ?? this.completedByName,
+      isForSelf: isForSelf,
       isRoutine: isRoutine,
       routineTemplateId: routineTemplateId,
       routineDateString: routineDateString,

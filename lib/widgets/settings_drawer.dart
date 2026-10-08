@@ -111,7 +111,11 @@ class SettingsDrawer extends StatelessWidget {
                       );
                     },
                   ),
-                  if (user.role == UserRoles.director)
+                  if (user.role == UserRoles.director ||
+                      user.role == UserRoles.housekeepingManager ||
+                      user.role == UserRoles.maintenanceManager ||
+                      user.role == UserRoles.receptionManager ||
+                      user.role.startsWith(UserRoles.supervisor))
                     _drawerItem(
                       icon: Icons.archive_outlined,
                       title: 'Archives',
