@@ -1464,7 +1464,36 @@ class HotelProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _createGoogleDirectorProfile(User user) async {
+  /// Promotes the current user to Director Général in both Firestore and memory.
+///
+/// Called when a user completes onboarding by selecting the
+/// "Directeur d'Hôtel" role. This guarantees the Director dashboard with
+/// analytics renders even when the account was originally created with a
+/// lower role (e.g. via Google/Apple sign-in linking to an existing Staff doc).
+Future<void> setCurrentUserDirectorRole() async {
+  if (_currentUser == null) return;
+  try {
+    await _firestore.collection('users').doc(_currentUser!.id).set(
+      {'role': UserRoles.director},
+      SetOptions(merge: true),
+    );
+    _currentUser = HotelUser(
+      id: _currentUser!.id,
+      email: _currentUser!.email,
+      firstName: _currentUser!.firstName,
+      lastName: _currentUser!.lastName,
+      username: _currentUser!.username,
+      role: UserRoles.director,
+      phone: _currentUser!.phone,
+      hotelId: _currentUser!.hotelId,
+    );
+    notifyListeners();
+  } catch (e) {
+    debugPrint('Error setting director role: $e');
+  }
+}
+
+Future<void> _createGoogleDirectorProfile(User user) async {
     final String displayName = user.displayName ?? '';
     final List<String> names = displayName.split(' ');
     final String fName = names.isNotEmpty ? names.first : '';

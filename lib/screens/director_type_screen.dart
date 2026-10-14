@@ -17,6 +17,7 @@ import 'condo_dashboard_screen.dart';
 import 'immeuble_dashboard.dart';
 import 'manager_profile_config.dart';
 import 'orders/order_hub_screen.dart';
+import 'terms_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants – Midnight Sapphire × Radiant Gold palette
@@ -110,6 +111,12 @@ class _DirectorTypeScreenState extends State<DirectorTypeScreen> {
         showAuthError(context, 'Session introuvable. Veuillez vous reconnecter.');
         return;
       }
+
+      // Promote the account to Director Général so the Director dashboard with
+      // analytics renders — even when the account was originally created with a
+      // lower role (e.g. Google/Apple sign-in linking to an existing Staff doc).
+      await Provider.of<HotelProvider>(context, listen: false)
+          .setCurrentUserDirectorRole();
 
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
         'directorType': option.label,
