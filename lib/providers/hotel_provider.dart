@@ -768,57 +768,60 @@ class HotelProvider extends ChangeNotifier {
       final DocumentSnapshot doc =
           await _firestore.collection('users').doc(user.uid).get();
       final bool uidProfileExists = doc.exists;
-      bool createdAccount =
-          userCredential.additionalUserInfo?.isNewUser == true ||
-              !uidProfileExists;
+      final bool isNewUser =
+          userCredential.additionalUserInfo?.isNewUser == true;
+      bool createdAccount = isNewUser || !uidProfileExists;
 
       if (!uidProfileExists) {
-        // The Google Auth UID has no Firestore profile yet.
-        // Check if a profile was pre-created for this email (e.g. via
-        // addStaffMember which used the email/password UID).
-        final emailQuery = await _firestore
-            .collection('users')
-            .where('email', isEqualTo: user.email)
-            .limit(1)
-            .get();
-
-        if (emailQuery.docs.isNotEmpty) {
-          // Existing sub-director / supervisor linking Google for the first time.
-          // Migrate the profile to the new Google Auth UID.
-          final existingDoc = emailQuery.docs.first;
-          final existingData = existingDoc.data();
-          final migBatch = _firestore.batch();
-          migBatch.set(
-            _firestore.collection('users').doc(user.uid),
-            {
-              ...existingData,
-              'uid': user.uid,
-              'email': user.email ?? existingData['email'],
-              'googleLinkedAt': FieldValue.serverTimestamp(),
-            },
-          );
-          if (existingDoc.id != user.uid) {
-            migBatch.delete(
-                _firestore.collection('users').doc(existingDoc.id));
-          }
-          await migBatch.commit();
-          createdAccount = false; // Existing profile, not a brand-new account.
+        if (isNewUser) {
+          // Truly new account (first time this Google account is used with this
+          // Firebase project). Always create a fresh Director profile so the
+          // Google sign-up lands on the same Director dashboard with analytics
+          // as an email/password registration — even if an old lower-role doc
+          // with the same email happens to exist in Firestore.
+          _createGoogleDirectorProfile(user);
+          createdAccount = true;
         } else {
-          // Truly new account — create Director profile as usual.
-          final String displayName = user.displayName ?? '';
-          final List<String> names = displayName.split(' ');
-          final String fName = names.isNotEmpty ? names.first : '';
-          final String lName = names.length > 1 ? names.last : '';
-          await _firestore.collection('users').doc(user.uid).set({
-            'firstName': fName,
-            'lastName': lName,
-            'username': user.email?.split('@')[0] ?? '',
-            'email': user.email ?? '',
-            'role': UserRoles.director,
-            'phone': '',
-            'termsAccepted': false,
-            'createdAt': FieldValue.serverTimestamp(),
-          });
+          // The Google Auth UID has no Firestore profile yet, but this is not a
+          // brand-new account — the email already has a profile (e.g. created
+          // via addStaffMember using the email/password UID). Link Google to
+          // that existing profile by migrating it to the new Google Auth UID.
+          // Fetch ALL docs for this email and pick the most privileged one, just
+          // like the email/password login path does. Using limit(1).first instead
+          // could grab an old plain-Staff doc when a Director/sub-director doc
+          // with the same email also exists, which silently downgraded Google
+          // sign-ups to the staff dashboard.
+          final emailQuery = await _firestore
+              .collection('users')
+              .where('email', isEqualTo: user.email)
+              .get();
+
+          if (emailQuery.docs.isNotEmpty) {
+            // Existing sub-director / supervisor linking Google for the first time.
+            // Migrate the profile to the new Google Auth UID.
+            final existingDoc = _pickBestUserDoc(emailQuery.docs);
+            final existingData = existingDoc.data();
+            final migBatch = _firestore.batch();
+            migBatch.set(
+              _firestore.collection('users').doc(user.uid),
+              {
+                ...existingData,
+                'uid': user.uid,
+                'email': user.email ?? existingData['email'],
+                'googleLinkedAt': FieldValue.serverTimestamp(),
+              },
+            );
+            if (existingDoc.id != user.uid) {
+              migBatch.delete(
+                  _firestore.collection('users').doc(existingDoc.id));
+            }
+            await migBatch.commit();
+            createdAccount = false; // Existing profile, not a brand-new account.
+          } else {
+            // No profile at this UID and none by email — create Director.
+            _createGoogleDirectorProfile(user);
+            createdAccount = true;
+          }
         }
       }
 
@@ -1310,6 +1313,8 @@ class HotelProvider extends ChangeNotifier {
     final userRef = _firestore.collection('users').doc(user.uid);
     final doc = await userRef.get();
     final bool uidProfileExists = doc.exists;
+    final bool isNewUser =
+        userCredential.additionalUserInfo?.isNewUser == true;
     final fullName = (userCredential.user?.displayName ?? '').trim();
     final firstName = appleSignIn.firstName.isNotEmpty
         ? appleSignIn.firstName
@@ -1320,9 +1325,26 @@ class HotelProvider extends ChangeNotifier {
     final resolvedEmail = (user.email ?? appleSignIn.email).trim();
 
     if (!uidProfileExists) {
-      // No profile at this Apple Auth UID yet.
-      // Check if a profile already exists for this email (pre-created via
-      // addStaffMember using the email/password UID).
+      if (isNewUser) {
+        // Truly new account (first time this Apple account is used with this
+        // Firebase project). Always create a fresh Director profile so the
+        // Apple sign-up lands on the same Director dashboard with analytics
+        // as an email/password registration — even if an old lower-role doc
+        // with the same email happens to exist in Firestore.
+        await _createAppleDirectorProfile(
+          user: user,
+          userRef: userRef,
+          firstName: firstName,
+          lastName: lastName,
+          resolvedEmail: resolvedEmail,
+        );
+        return true;
+      }
+
+      // The Apple Auth UID has no Firestore profile yet, but this is not a
+      // brand-new account — the email already has a profile (e.g. created via
+      // addStaffMember using the email/password UID). Link Apple to that
+      // existing profile by migrating it to the new Apple Auth UID.
       final emailToQuery = resolvedEmail.isNotEmpty
           ? resolvedEmail
           : appleSignIn.email;
@@ -1360,19 +1382,14 @@ class HotelProvider extends ChangeNotifier {
         await migBatch.commit();
         return false; // Existing profile, not a brand-new account.
       } else {
-        // Truly new account — create Director profile.
-        await userRef.set({
-          'firstName': firstName,
-          'lastName': lastName,
-          'username': resolvedEmail.isNotEmpty
-              ? resolvedEmail.split('@')[0]
-              : 'stayfix_user',
-          'email': resolvedEmail,
-          'role': UserRoles.director,
-          'phone': '',
-          'termsAccepted': false,
-          'createdAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+        // No profile at this UID and none by email — create Director.
+        await _createAppleDirectorProfile(
+          user: user,
+          userRef: userRef,
+          firstName: firstName,
+          lastName: lastName,
+          resolvedEmail: resolvedEmail,
+        );
         return true;
       }
     }
@@ -1445,6 +1462,44 @@ class HotelProvider extends ChangeNotifier {
       default:
         return 'Connexion Apple impossible pour le moment.';
     }
+  }
+
+  Future<void> _createGoogleDirectorProfile(User user) async {
+    final String displayName = user.displayName ?? '';
+    final List<String> names = displayName.split(' ');
+    final String fName = names.isNotEmpty ? names.first : '';
+    final String lName = names.length > 1 ? names.last : '';
+    await _firestore.collection('users').doc(user.uid).set({
+      'firstName': fName,
+      'lastName': lName,
+      'username': user.email?.split('@')[0] ?? '',
+      'email': user.email ?? '',
+      'role': UserRoles.director,
+      'phone': '',
+      'termsAccepted': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> _createAppleDirectorProfile({
+    required User user,
+    required DocumentReference userRef,
+    required String firstName,
+    required String lastName,
+    required String resolvedEmail,
+  }) async {
+    await userRef.set({
+      'firstName': firstName,
+      'lastName': lastName,
+      'username': resolvedEmail.isNotEmpty
+          ? resolvedEmail.split('@')[0]
+          : 'stayfix_user',
+      'email': resolvedEmail,
+      'role': UserRoles.director,
+      'phone': '',
+      'termsAccepted': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   String _extractFirstName(String fullName) {
