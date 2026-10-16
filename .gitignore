@@ -63,3 +63,9 @@ curl_headers.txt
 
 # Claude Code local config
 .claude/
+
+# Android keystore secrets (do NOT commit)
+android/*.jks
+android/*.jks.bak
+pass.txt
+test_keystore.bat
